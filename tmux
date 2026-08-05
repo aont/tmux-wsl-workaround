@@ -196,6 +196,7 @@ if [ -n "$WSL_DISTRO_NAME" ]; then
 fi
 append_word cmd_words --cd
 append_word cmd_words "$start_dir"
+append_word cmd_words "--exec"
 append_word cmd_words "$TMUX_BIN"
 cmd_words=${cmd_words}${global_words}
 append_word cmd_words new-session
