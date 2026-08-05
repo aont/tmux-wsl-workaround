@@ -15,6 +15,12 @@
 
 #define SEP_CHAR '\037'
 #define LAUNCH_TIMEOUT_MS 30000
+#ifndef TMUX_BIN
+#define TMUX_BIN "/usr/bin/tmux"
+#endif
+#ifndef CMD_EXE
+#define CMD_EXE "/mnt/c/Windows/System32/cmd.exe"
+#endif
 
 struct vec {
     char **v;
@@ -160,11 +166,9 @@ static int drain_result_fd(int fd, char **session_id, int print_visible) {
 }
 
 int main(int argc, char **argv) {
-    const char *tmux_bin = getenv("TMUX_BIN");
-    const char *cmd_exe = getenv("CMD_EXE");
+    const char *tmux_bin = TMUX_BIN;
+    const char *cmd_exe = CMD_EXE;
     const char *distro = getenv("WSL_DISTRO_NAME");
-    if (!tmux_bin || !*tmux_bin) tmux_bin = "/usr/bin/tmux";
-    if (!cmd_exe || !*cmd_exe) cmd_exe = "/mnt/c/Windows/System32/cmd.exe";
     if (!distro) distro = "";
 
     if (has_command_separator(argc - 1, argv)) passthrough(tmux_bin, argc - 1, argv);
