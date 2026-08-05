@@ -177,28 +177,21 @@ int main(int argc, char **argv) {
     if (getcwd(start_dir, sizeof(start_dir)) == NULL) die("getcwd");
 
     struct vec global = {0}, global_attach = {0}, new_opts = {0}, tail = {0};
-    int i = 1;
-    while (i < argc) {
-        char *a = argv[i];
-        if (strcmp(a, "--") == 0) { i++; break; }
-        if ((strcmp(a, "-L") == 0 || strcmp(a, "-S") == 0)) {
-            if (i + 1 >= argc) passthrough(tmux_bin, argc - 1, argv);
-            vec_push(&global, a); vec_push(&global, argv[i + 1]);
-            vec_push(&global_attach, a); vec_push(&global_attach, argv[i + 1]);
-            i += 2; continue;
+
+    opterr = 0;
+    optind = 1;
+    int opt;
+    while ((opt = getopt(argc, argv, "+L:S:CDhVc:")) != -1) {
+        char opt_s[3] = { '-', (char)opt, 0 };
+        if (opt == 'L' || opt == 'S') {
+            vec_push(&global, opt_s); vec_push(&global, optarg);
+            vec_push(&global_attach, opt_s); vec_push(&global_attach, optarg);
+            continue;
         }
-        if ((strncmp(a, "-L", 2) == 0 || strncmp(a, "-S", 2) == 0) && a[2] != '\0') {
-            char opt[3] = { a[0], a[1], 0 };
-            vec_push(&global, opt); vec_push(&global, a + 2);
-            vec_push(&global_attach, opt); vec_push(&global_attach, a + 2);
-            i++; continue;
-        }
-        if (strcmp(a, "-C") == 0 || strcmp(a, "-CC") == 0 || strcmp(a, "-D") == 0 ||
-            strcmp(a, "-h") == 0 || strcmp(a, "-V") == 0 || strcmp(a, "-c") == 0 ||
-            strncmp(a, "-c", 2) == 0 || a[0] == '-') passthrough(tmux_bin, argc - 1, argv);
-        break;
+        passthrough(tmux_bin, argc - 1, argv);
     }
 
+    int i = optind;
     const char *subcmd = "new-session";
     if (i < argc) {
         subcmd = argv[i++];
@@ -208,36 +201,25 @@ int main(int argc, char **argv) {
 
     int user_detached = 0, user_print = 0, user_format_specified = 0, no_update_env = 0;
     const char *user_format = "", *client_flags = NULL;
-    int parsing = 1;
-    while (i < argc) {
-        char *a = argv[i++];
-        if (!parsing) { vec_push(&tail, a); continue; }
-        if (strcmp(a, "--") == 0) { parsing = 0; vec_push(&tail, "--"); continue; }
-        if (strcmp(a, "-") == 0 || a[0] != '-') { parsing = 0; vec_push(&tail, a); continue; }
-        char *cluster = a + 1;
-        while (*cluster) {
-            char ch = *cluster++;
-            char opt[3] = { '-', ch, 0 };
-            if (ch == 'A') passthrough(tmux_bin, argc - 1, argv);
-            if (ch == 'd') { user_detached = 1; vec_push(&new_opts, opt); continue; }
-            if (ch == 'D' || ch == 'E' || ch == 'P' || ch == 'X') {
-                if (ch == 'E') no_update_env = 1;
-                if (ch == 'P') user_print = 1;
-                vec_push(&new_opts, opt); continue;
-            }
-            if (strchr("ceFfnstxy", ch) != NULL) {
-                const char *val;
-                vec_push(&new_opts, opt);
-                if (*cluster) { val = cluster; cluster += strlen(cluster); }
-                else { if (i >= argc) passthrough(tmux_bin, argc - 1, argv); val = argv[i++]; }
-                vec_push(&new_opts, val);
-                if (ch == 'F') { user_format_specified = 1; user_format = val; }
-                if (ch == 'f') client_flags = val;
-                continue;
-            }
-            passthrough(tmux_bin, argc - 1, argv);
+    optind = i;
+    while ((opt = getopt(argc, argv, "+AdEPXc:e:F:f:n:s:t:x:y:")) != -1) {
+        char opt_s[3] = { '-', (char)opt, 0 };
+        if (opt == 'A') passthrough(tmux_bin, argc - 1, argv);
+        if (opt == 'd') user_detached = 1;
+        if (opt == 'E') no_update_env = 1;
+        if (opt == 'P') user_print = 1;
+        if (opt == '?') passthrough(tmux_bin, argc - 1, argv);
+
+        vec_push(&new_opts, opt_s);
+        if (strchr("ceFfnstxy", opt) != NULL) {
+            vec_push(&new_opts, optarg);
+            if (opt == 'F') { user_format_specified = 1; user_format = optarg; }
+            if (opt == 'f') client_flags = optarg;
         }
     }
+
+    if (optind > i && strcmp(argv[optind - 1], "--") == 0) vec_push(&tail, "--");
+    for (i = optind; i < argc; i++) vec_push(&tail, argv[i]);
 
     if (!*distro) {
         fprintf(stderr, "tmux wrapper: WSL_DISTRO_NAME must be set for FIFO transport\n");
