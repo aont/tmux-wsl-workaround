@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SEP_CHAR '\037'
@@ -43,6 +44,12 @@ static void on_signal(int sig) {
 static void die(const char *msg) {
     perror(msg);
     exit(1);
+}
+
+static long long monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) die("clock_gettime");
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static char *xstrdup(const char *s) {
@@ -271,12 +278,28 @@ int main(int argc, char **argv) {
     if (rfd < 0 || sfd < 0) die("open fifo");
 
     int status = -1;
-    int waited = 0;
-    while (waited < LAUNCH_TIMEOUT_MS && status < 0) {
+    long long deadline = monotonic_ms() + LAUNCH_TIMEOUT_MS;
+    while (status < 0) {
         if (read_status_fd(sfd, &status)) break;
-        struct pollfd pfds[2] = {{ .fd = rfd, .events = POLLIN | POLLHUP }, { .fd = sfd, .events = POLLIN | POLLHUP }};
-        poll(pfds, 2, 100);
-        waited += 100;
+
+        long long remaining = deadline - monotonic_ms();
+        if (remaining <= 0) break;
+
+        struct pollfd pfd = { .fd = sfd, .events = POLLIN };
+        int timeout = remaining > 100 ? 100 : (int)remaining;
+        int rc;
+        do {
+            rc = poll(&pfd, 1, timeout);
+        } while (rc < 0 && errno == EINTR);
+        if (rc < 0) die("poll status fifo");
+        if (pfd.revents & (POLLERR | POLLNVAL)) {
+            errno = EIO;
+            die("poll status fifo");
+        }
+        if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) {
+            fprintf(stderr, "tmux wrapper: WSL launch closed status FIFO without returning a status\n");
+            return 1;
+        }
     }
     if (status < 0) {
         fprintf(stderr, "tmux wrapper: timed out waiting for WSL launch result\n");
