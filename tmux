@@ -15,7 +15,12 @@ append_word() {
     eval "$1=\${$1}\$(quote_arg \"\$2\")' '"
 }
 
+set_terminal_title() {
+    printf '\033]0;tmux\007'
+}
+
 passthrough() {
+    set_terminal_title
     eval "exec $(quote_arg "$TMUX_BIN") $original_words"
 }
 
@@ -251,4 +256,5 @@ fi
 append_word attach_words -t
 append_word attach_words "$session_id"
 
+set_terminal_title
 eval "exec $attach_words"

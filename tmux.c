@@ -89,12 +89,19 @@ static void vec_extend(struct vec *dst, const struct vec *src) {
     for (size_t i = 0; i < src->n; i++) vec_push(dst, src->v[i]);
 }
 
+static void set_terminal_title(void) {
+    const char title[] = "\033]0;tmux\007";
+    ssize_t ignored = write(STDOUT_FILENO, title, sizeof(title) - 1);
+    (void)ignored;
+}
+
 static void passthrough(const char *tmux_bin, int argc, char **argv) {
     char **exec_argv = calloc((size_t)argc + 2, sizeof(*exec_argv));
     if (exec_argv == NULL) die("calloc");
     exec_argv[0] = (char *)tmux_bin;
     for (int i = 1; i <= argc; i++) exec_argv[i] = argv[i];
     exec_argv[argc + 1] = NULL;
+    set_terminal_title();
     execv(tmux_bin, exec_argv);
     die(tmux_bin);
 }
@@ -311,6 +318,7 @@ int main(int argc, char **argv) {
     if (no_update_env) vec_push(&attach, "-E");
     if (client_flags) { vec_push(&attach, "-f"); vec_push(&attach, client_flags); }
     vec_push(&attach, "-t"); vec_push(&attach, session_id);
+    set_terminal_title();
     execv(tmux_bin, attach.v);
     die(tmux_bin);
 }
