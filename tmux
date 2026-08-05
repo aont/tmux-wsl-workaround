@@ -37,39 +37,22 @@ global_attach_words=
 
 # Parse only global options that are safe for special handling.  Anything else
 # is left to the real tmux unchanged.
-while [ $# -gt 0 ]; do
-    case $1 in
-        --)
-            shift
-            break
-            ;;
-        -L|-S)
-            opt=$1
-            shift
-            [ $# -gt 0 ] || passthrough "$opt"
+OPTIND=1
+while getopts :L:S:CDhVc: opt; do
+    case $opt in
+        L|S)
+            opt="-$opt"
             append_word global_words "$opt"
-            append_word global_words "$1"
+            append_word global_words "$OPTARG"
             append_word global_attach_words "$opt"
-            append_word global_attach_words "$1"
-            shift
+            append_word global_attach_words "$OPTARG"
             ;;
-        -L?*|-S?*)
-            opt=$(printf '%s' "$1" | cut -c 1-2)
-            val=$(printf '%s' "$1" | cut -c 3-)
-            append_word global_words "$opt"
-            append_word global_words "$val"
-            append_word global_attach_words "$opt"
-            append_word global_attach_words "$val"
-            shift
-            ;;
-        -C|-CC|-D|-h|-V|-c|-c?*|-*)
+        C|D|h|V|c|?|:)
             passthrough "$@"
-            ;;
-        *)
-            break
             ;;
     esac
 done
+shift $((OPTIND - 1))
 
 if [ $# -eq 0 ]; then
     subcmd=new-session
@@ -93,79 +76,40 @@ client_flags=
 no_update_env=0
 new_words=
 tail_words=
-parsing_options=1
 
-while [ $# -gt 0 ]; do
-    if [ $parsing_options -eq 0 ]; then
-        append_word tail_words "$1"
-        shift
-        continue
-    fi
-
-    case $1 in
-        --)
-            parsing_options=0
-            shift
-            while [ $# -gt 0 ]; do
-                append_word tail_words "$1"
-                shift
-            done
+OPTIND=1
+while getopts :AdEPXc:e:F:f:n:s:t:x:y: opt; do
+    opt_word="-$opt"
+    case $opt in
+        A)
+            # -A can attach instead of creating, so let tmux handle it.
+            passthrough "$subcmd" "$@"
             ;;
-        -)
-            parsing_options=0
-            append_word tail_words "$1"
-            shift
+        d)
+            user_detached=1
+            append_word new_words "$opt_word"
             ;;
-        -*)
-            optarg=$1
-            shift
-            cluster=$(printf '%s' "$optarg" | cut -c 2-)
-            while [ -n "$cluster" ]; do
-                ch=$(printf '%s' "$cluster" | cut -c 1)
-                rest=$(printf '%s' "$cluster" | cut -c 2-)
-                case $ch in
-                    A)
-                        # -A can attach instead of creating, so let tmux handle it.
-                        passthrough "$subcmd" "$optarg" "$@"
-                        ;;
-                    d)
-                        user_detached=1
-                        append_word new_words "-$ch"
-                        cluster=$rest
-                        ;;
-                    D|E|P|X)
-                        [ "$ch" = E ] && no_update_env=1
-                        [ "$ch" = P ] && user_print=1
-                        append_word new_words "-$ch"
-                        cluster=$rest
-                        ;;
-                    c|e|F|f|n|s|t|x|y)
-                        append_word new_words "-$ch"
-                        if [ -n "$rest" ]; then
-                            val=$rest
-                            cluster=
-                        else
-                            [ $# -gt 0 ] || passthrough "$subcmd" "$optarg"
-                            val=$1
-                            shift
-                            cluster=
-                        fi
-                        append_word new_words "$val"
-                        [ "$ch" = F ] && user_format_specified=1 && user_format=$val
-                        [ "$ch" = f ] && client_flags=$val
-                        ;;
-                    *)
-                        passthrough "$subcmd" "$optarg" "$@"
-                        ;;
-                esac
-            done
+        D|E|P|X)
+            [ "$opt" = E ] && no_update_env=1
+            [ "$opt" = P ] && user_print=1
+            append_word new_words "$opt_word"
             ;;
-        *)
-            parsing_options=0
-            append_word tail_words "$1"
-            shift
+        c|e|F|f|n|s|t|x|y)
+            append_word new_words "$opt_word"
+            append_word new_words "$OPTARG"
+            [ "$opt" = F ] && user_format_specified=1 && user_format=$OPTARG
+            [ "$opt" = f ] && client_flags=$OPTARG
+            ;;
+        ?|:)
+            passthrough "$subcmd" "$@"
             ;;
     esac
+done
+shift $((OPTIND - 1))
+
+while [ $# -gt 0 ]; do
+    append_word tail_words "$1"
+    shift
 done
 
 if [ $user_print -eq 1 ]; then
