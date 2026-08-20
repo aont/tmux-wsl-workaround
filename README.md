@@ -29,7 +29,7 @@ The repository contains two implementations.
 
 ### Compiled C implementation
 
-`tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built separately with the platform-specific makefiles. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` while forwarding its standard streams.
+`tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built separately with the platform-specific makefiles. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` and passes it inheritable duplicates of the helper's standard handles.
 
 The real tmux and `console_redirect.exe` paths are fixed at build time.
 
