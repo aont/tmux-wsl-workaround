@@ -23,21 +23,11 @@ This is not a replacement implementation of the tmux command-line interface. It 
 
 The wrapper and the real tmux must be in the **same WSL distribution**.
 
-## Implementations
-
-The repository contains two implementations.
-
-### Compiled C implementation
+## Implementation
 
 `tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built separately with the platform-specific makefiles. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` while forwarding its standard streams.
 
 The real tmux and `console_redirect.exe` paths are fixed at build time.
-
-### BusyBox ash implementation
-
-The `tmux` file is an implementation written for BusyBox `ash`. It avoids compiling the Linux C wrapper, but still requires the compiled Windows helper.
-
-The Linux makefile does not install the ash implementation automatically.
 
 ## Installation
 
@@ -100,21 +90,6 @@ sudo make -f Makefile.linux install PREFIX=/usr/local
 
 Do not install the wrapper over the real tmux binary. `TMUX_BIN` must never resolve to the wrapper itself, or invocation will recurse.
 
-### Installing the ash implementation
-
-To use the shell implementation instead:
-
-```sh
-sudo install -m 0755 ./tmux /usr/local/bin/tmux
-```
-
-It recognizes these optional environment variables:
-
-```sh
-TMUX_BIN=/usr/bin/tmux
-CONSOLE_REDIRECT_EXE=/usr/local/bin/console_redirect.exe
-```
-
 ## Optional dedicated Alpine WSL distribution
 
 Using a small Alpine Linux WSL distribution exclusively as a tmux host is a convenient arrangement.
@@ -146,19 +121,6 @@ make -f Makefile.linux install
 ```
 
 Run the installation command as root, or through an appropriately configured privilege-elevation tool.
-
-To use the ash implementation, build and install the helper before replacing the installed C wrapper:
-
-```sh
-apk add --no-cache git tmux build-base
-
-git clone https://github.com/aont/tmux-wsl-workaround.git
-cd tmux-wsl-workaround
-
-# Build console_redirect.exe on Windows first, then copy it here.
-install -m 0755 ./console_redirect.exe /usr/local/bin/console_redirect.exe
-install -m 0755 ./tmux /usr/local/bin/tmux
-```
 
 When Alpine is used as a dedicated host, tmux panes initially run Alpine commands and shells. To enter another installed WSL distribution from a pane, invoke it explicitly, for example:
 
