@@ -1,0 +1,12 @@
+CC = gcc
+CFLAGS = -Wall -Wextra -O2
+
+.PHONY: all clean
+
+all: console_redirect.exe
+
+console_redirect.exe: console_redirect.c
+	$(CC) $(CFLAGS) $< -o $@
+
+clean:
+	rm -f console_redirect.exe

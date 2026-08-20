@@ -18,7 +18,8 @@ This is not a replacement implementation of the tmux command-line interface. It 
 * A normal WSL distribution session with `WSL_DISTRO_NAME` set
 * tmux installed in the same WSL distribution
 * The wrapper running as the distribution's default WSL user
-* A C99 compiler, a MinGW-w64 cross-compiler, and `make` when building the compiled implementation and Windows helper
+* A C99 compiler and GNU Make for the Linux wrapper
+* MinGW with GNU Make, or MSVC with NMake, for the Windows helper
 
 The wrapper and the real tmux must be in the **same WSL distribution**.
 
@@ -28,7 +29,7 @@ The repository contains two implementations.
 
 ### Compiled C implementation
 
-`tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built and installed by the Makefile. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` while forwarding its standard streams.
+`tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built separately with the platform-specific makefiles. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` while forwarding its standard streams.
 
 The real tmux and `console_redirect.exe` paths are fixed at build time.
 
@@ -36,17 +37,29 @@ The real tmux and `console_redirect.exe` paths are fixed at build time.
 
 The `tmux` file is an implementation written for BusyBox `ash`. It avoids compiling the Linux C wrapper, but still requires the compiled Windows helper.
 
-The Makefile does not install the ash implementation automatically.
+The Linux makefile does not install the ash implementation automatically.
 
 ## Installation
 
 First install the real tmux and the tools required to build the wrapper.
 
-Clone the repository and run:
+First, build the Windows helper from a MinGW shell with GNU Make:
 
 ```sh
-make
-sudo make install
+make -f Makefile.mingw
+```
+
+Alternatively, build it from an MSVC developer command prompt with NMake:
+
+```bat
+nmake /F Makefile.msvc
+```
+
+Copy `console_redirect.exe` into the WSL filesystem at `/usr/local/bin/console_redirect.exe`. Then build and install the Linux wrapper from WSL:
+
+```sh
+make -f Makefile.linux
+sudo make -f Makefile.linux install
 ```
 
 By default, this produces the following arrangement:
@@ -73,17 +86,16 @@ The following Make variables are available:
 | ---------- | --------------------------------- | ---------------------------------- |
 | `TMUX_BIN` | `/usr/bin/tmux`                   | Absolute path to the real tmux     |
 | `CONSOLE_REDIRECT_EXE` | `/usr/local/bin/console_redirect.exe` | Installed Windows helper path |
-| `WINDOWS_CC` | `x86_64-w64-mingw32-gcc` | Compiler used for the Windows helper |
 | `PREFIX`   | `/usr/local`                      | Installation prefix                |
 | `BINDIR`   | `$(PREFIX)/bin`                   | Wrapper installation directory     |
 
 For example:
 
 ```sh
-make clean
-make TMUX_BIN=/usr/bin/tmux \
+make -f Makefile.linux clean
+make -f Makefile.linux TMUX_BIN=/usr/bin/tmux \
      CONSOLE_REDIRECT_EXE=/usr/local/bin/console_redirect.exe
-sudo make install PREFIX=/usr/local
+sudo make -f Makefile.linux install PREFIX=/usr/local
 ```
 
 Do not install the wrapper over the real tmux binary. `TMUX_BIN` must never resolve to the wrapper itself, or invocation will recurse.
@@ -121,16 +133,16 @@ After installation, find the exact registered distribution name with:
 wsl.exe --list --verbose
 ```
 
-Inside Alpine, the compiled implementation can be installed with:
+After building the Windows helper as described above and copying it to `/usr/local/bin/console_redirect.exe`, the compiled implementation can be installed inside Alpine with:
 
 ```sh
-apk add --no-cache git tmux build-base mingw-w64-gcc
+apk add --no-cache git tmux build-base
 
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
-make
-make install
+make -f Makefile.linux
+make -f Makefile.linux install
 ```
 
 Run the installation command as root, or through an appropriately configured privilege-elevation tool.
@@ -138,12 +150,12 @@ Run the installation command as root, or through an appropriately configured pri
 To use the ash implementation, build and install the helper before replacing the installed C wrapper:
 
 ```sh
-apk add --no-cache git tmux build-base mingw-w64-gcc
+apk add --no-cache git tmux build-base
 
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
-make console_redirect.exe
+# Build console_redirect.exe on Windows first, then copy it here.
 install -m 0755 ./console_redirect.exe /usr/local/bin/console_redirect.exe
 install -m 0755 ./tmux /usr/local/bin/tmux
 ```
