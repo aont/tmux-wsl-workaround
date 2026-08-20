@@ -2,7 +2,7 @@
 
 A narrow `tmux` wrapper for Windows Subsystem for Linux.
 
-When a new tmux session is requested, the wrapper starts the real tmux through a separate, minimized Windows-side `wsl.exe` launch. It obtains the newly created session ID through private FIFOs and then attaches the original terminal to that session.
+When a new tmux session is requested, the wrapper starts the real tmux through a separate, minimized Windows-side `wsl.exe` launch. The included `console_redirect.exe` helper returns the newly created session ID on standard output, after which the wrapper attaches the original terminal to that session.
 
 Most other tmux commands are passed directly to the real tmux.
 
@@ -16,14 +16,11 @@ This is not a replacement implementation of the tmux command-line interface. It 
 
 * Windows Subsystem for Linux with Windows executable interoperability enabled
 * A normal WSL distribution session with `WSL_DISTRO_NAME` set
-* The Windows C drive mounted at `/mnt/c`
-* `/mnt/c/Windows/System32/cmd.exe`
-* `/bin/sh`
 * tmux installed in the same WSL distribution
 * The wrapper running as the distribution's default WSL user
-* A C99 compiler and `make` when using the compiled implementation
+* A C99 compiler, a MinGW-w64 cross-compiler, and `make` when building the compiled implementation and Windows helper
 
-The wrapper and the real tmux must be in the **same WSL distribution**. The FIFO paths used to return the session ID and exit status are local to that distribution.
+The wrapper and the real tmux must be in the **same WSL distribution**.
 
 ## Implementations
 
@@ -31,13 +28,13 @@ The repository contains two implementations.
 
 ### Compiled C implementation
 
-`tmux.c` is built and installed by the Makefile. This is the recommended implementation.
+`tmux.c` and the Windows `console_redirect.exe` helper (built from `console_redirect.c`) are built and installed by the Makefile. This is the recommended implementation. The helper creates a minimized Windows console for `wsl.exe` while forwarding its standard streams.
 
-The real tmux and `cmd.exe` paths are fixed at build time.
+The real tmux and `console_redirect.exe` paths are fixed at build time.
 
 ### BusyBox ash implementation
 
-The `tmux` file is an implementation written for BusyBox `ash`. It can be used without compiling the C program.
+The `tmux` file is an implementation written for BusyBox `ash`. It avoids compiling the Linux C wrapper, but still requires the compiled Windows helper.
 
 The Makefile does not install the ash implementation automatically.
 
@@ -56,6 +53,7 @@ By default, this produces the following arrangement:
 
 ```text
 /usr/local/bin/tmux   wrapper
+/usr/local/bin/console_redirect.exe   Windows launch helper
 /usr/bin/tmux         real tmux
 ```
 
@@ -74,7 +72,8 @@ The following Make variables are available:
 | Variable   | Default                           | Purpose                            |
 | ---------- | --------------------------------- | ---------------------------------- |
 | `TMUX_BIN` | `/usr/bin/tmux`                   | Absolute path to the real tmux     |
-| `CMD_EXE`  | `/mnt/c/Windows/System32/cmd.exe` | Absolute path to Windows `cmd.exe` |
+| `CONSOLE_REDIRECT_EXE` | `/usr/local/bin/console_redirect.exe` | Installed Windows helper path |
+| `WINDOWS_CC` | `x86_64-w64-mingw32-gcc` | Compiler used for the Windows helper |
 | `PREFIX`   | `/usr/local`                      | Installation prefix                |
 | `BINDIR`   | `$(PREFIX)/bin`                   | Wrapper installation directory     |
 
@@ -83,7 +82,7 @@ For example:
 ```sh
 make clean
 make TMUX_BIN=/usr/bin/tmux \
-     CMD_EXE=/mnt/c/Windows/System32/cmd.exe
+     CONSOLE_REDIRECT_EXE=/usr/local/bin/console_redirect.exe
 sudo make install PREFIX=/usr/local
 ```
 
@@ -101,11 +100,8 @@ It recognizes these optional environment variables:
 
 ```sh
 TMUX_BIN=/usr/bin/tmux
-CMD_EXE=/mnt/c/Windows/System32/cmd.exe
-TMUX_WSL_LAUNCH_TIMEOUT=15
+CONSOLE_REDIRECT_EXE=/usr/local/bin/console_redirect.exe
 ```
-
-The timeout value for the ash implementation is in seconds.
 
 ## Optional dedicated Alpine WSL distribution
 
@@ -128,7 +124,7 @@ wsl.exe --list --verbose
 Inside Alpine, the compiled implementation can be installed with:
 
 ```sh
-apk add --no-cache git tmux build-base
+apk add --no-cache git tmux build-base mingw-w64-gcc
 
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
@@ -139,14 +135,16 @@ make install
 
 Run the installation command as root, or through an appropriately configured privilege-elevation tool.
 
-For the ash implementation, a compiler is not required:
+To use the ash implementation, build and install the helper before replacing the installed C wrapper:
 
 ```sh
-apk add --no-cache git tmux
+apk add --no-cache git tmux build-base mingw-w64-gcc
 
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
+make console_redirect.exe
+install -m 0755 ./console_redirect.exe /usr/local/bin/console_redirect.exe
 install -m 0755 ./tmux /usr/local/bin/tmux
 ```
 
@@ -156,7 +154,7 @@ When Alpine is used as a dedicated host, tmux panes initially run Alpine command
 wsl.exe -d Ubuntu
 ```
 
-The wrapper itself must still run in Alpine so that its client, server, and FIFO transport all use the same distribution.
+The wrapper itself must still run in Alpine so that its client and server use the same distribution.
 
 ## Usage
 
@@ -223,26 +221,24 @@ For specially handled session creation, the wrapper:
 
 1. Records the current WSL distribution and working directory.
 
-2. Creates a private temporary directory containing result and status FIFOs.
-
-3. Starts a minimized Windows command using approximately this launch chain:
+2. Invokes the Windows helper, which creates a minimized console and runs approximately this command:
 
    ```text
-   cmd.exe /c start "" /min
+   console_redirect.exe
        wsl.exe -d <current-distribution>
        --cd <current-directory>
-       --exec /bin/sh ...
+       --exec /usr/bin/tmux new-session -d -P -F <format> ...
    ```
 
-4. Runs the real tmux with internal `-d`, `-P`, and `-F` options.
+3. Runs the real tmux with internal `-d`, `-P`, and `-F` options.
 
-5. Receives the immutable tmux session ID and tmux exit status through the FIFOs.
+4. Reads the immutable tmux session ID from the helper's standard output and uses the helper's exit status.
 
-6. Preserves user-requested `-P` and `-F` output.
+5. Preserves user-requested `-P` and `-F` output.
 
-7. Returns immediately if the original command included `-d`.
+6. Returns immediately if the original command included `-d`.
 
-8. Otherwise, replaces the wrapper with:
+7. Otherwise, replaces the wrapper with:
 
    ```sh
    /usr/bin/tmux attach-session -t '<session-id>'
@@ -257,11 +253,8 @@ Attachment uses the immutable session ID rather than the potentially ambiguous s
 * `new-session -A` is delegated because it can turn session creation into an attachment.
 * tmux command sequences are delegated because a later attachment command could block inside the minimized WSL process.
 * The wrapper requires `WSL_DISTRO_NAME`.
-* The inner WSL launch uses the distribution's configured default user. Running the wrapper as another user can prevent access to its private FIFOs.
-* `/mnt/c` must exist, even when a different `CMD_EXE` path is selected at build time.
-* The C implementation currently uses a fixed 30-second launch timeout.
+* The inner WSL launch uses the distribution's configured default user. Running the wrapper as another user may create or find tmux sessions for a different account.
 * Because the inner session is initially created detached, its initial size follows tmux's detached-session rules. Supply `-x` and `-y` when an explicit initial size is required.
-* The C and ash implementations have different timeout configuration and may not fail identically in every edge case.
 
 ## Troubleshooting
 
@@ -280,7 +273,7 @@ A container, chroot, or manually constructed Linux environment may not provide t
 Check that Windows interoperability and the expected paths work:
 
 ```sh
-test -x /mnt/c/Windows/System32/cmd.exe
+test -x /usr/local/bin/console_redirect.exe
 test -x /usr/bin/tmux
 ```
 
