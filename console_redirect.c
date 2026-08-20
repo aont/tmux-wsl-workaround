@@ -9,6 +9,12 @@ typedef struct StdinThreadContext {
     HANDLE destination;
 } StdinThreadContext;
 
+typedef struct OutputThreadContext {
+    HANDLE source;
+    HANDLE destination;
+    DWORD error;
+} OutputThreadContext;
+
 static char const *ShiftCommandLine(char const *cmdline) {
     BOOL backslash_preceding = FALSE, inside_double_quote = FALSE, after_argv0 = FALSE;
     for (int i = 0;; i++) {
@@ -73,20 +79,42 @@ static DWORD WINAPI StdinThreadProc(LPVOID parameter) {
     return 0;
 }
 
+static DWORD WINAPI OutputThreadProc(LPVOID parameter) {
+    OutputThreadContext *context = (OutputThreadContext *)parameter;
+    for (;;) {
+        BYTE buffer[4096];
+        DWORD bytes_read = 0;
+        if (!ReadFile(context->source, buffer, sizeof(buffer), &bytes_read, NULL)) {
+            DWORD error = GetLastError();
+            if (error != ERROR_BROKEN_PIPE) context->error = error;
+            break;
+        }
+        if (bytes_read == 0) break;
+        if (!WriteAll(context->destination, buffer, bytes_read)) {
+            context->error = GetLastError();
+            break;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     char const *child_command_line = ShiftCommandLine(GetCommandLineA());
     char *mutable_command_line = NULL;
     SECURITY_ATTRIBUTES sa;
-    HANDLE stdout_read = NULL, stdout_write = NULL, stdin_read = NULL, stdin_write = NULL;
+    HANDLE stdout_read = NULL, stdout_write = NULL, stderr_read = NULL, stderr_write = NULL;
+    HANDLE stdin_read = NULL, stdin_write = NULL;
     HANDLE parent_stdin = INVALID_HANDLE_VALUE, parent_stdout = INVALID_HANDLE_VALUE;
-    HANDLE parent_stderr = INVALID_HANDLE_VALUE, child_stderr = NULL, stdin_thread = NULL;
+    HANDLE parent_stderr = INVALID_HANDLE_VALUE, stdin_thread = NULL, stderr_thread = NULL;
     StdinThreadContext stdin_context;
+    OutputThreadContext stderr_context;
     STARTUPINFOA startup_info;
     PROCESS_INFORMATION process_info;
     int exit_code = EXIT_FAILURE;
 
     ZeroMemory(&process_info, sizeof(process_info));
     ZeroMemory(&stdin_context, sizeof(stdin_context));
+    ZeroMemory(&stderr_context, sizeof(stderr_context));
     if (*child_command_line == '\0') { fprintf(stderr, "No command line to execute was specified.\n"); goto cleanup; }
     mutable_command_line = _strdup(child_command_line);
     if (mutable_command_line == NULL) { fprintf(stderr, "Could not allocate memory for the command line.\n"); goto cleanup; }
@@ -97,12 +125,12 @@ int main(void) {
     if (parent_stdin == NULL || parent_stdin == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stdin)"); goto cleanup; }
     if (parent_stdout == NULL || parent_stdout == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stdout)"); goto cleanup; }
     if (parent_stderr == NULL || parent_stderr == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stderr)"); goto cleanup; }
-    if (!DuplicateHandle(GetCurrentProcess(), parent_stderr, GetCurrentProcess(), &child_stderr,
-            0, TRUE, DUPLICATE_SAME_ACCESS)) { ShowWin32Error("DuplicateHandle(stderr)"); goto cleanup; }
 
     ZeroMemory(&sa, sizeof(sa)); sa.nLength = sizeof(sa); sa.bInheritHandle = TRUE;
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0)) { ShowWin32Error("CreatePipe(stdout)"); goto cleanup; }
     if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stdout)"); goto cleanup; }
+    if (!CreatePipe(&stderr_read, &stderr_write, &sa, 0)) { ShowWin32Error("CreatePipe(stderr)"); goto cleanup; }
+    if (!SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stderr)"); goto cleanup; }
     if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) { ShowWin32Error("CreatePipe(stdin)"); goto cleanup; }
     if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stdin)"); goto cleanup; }
 
@@ -112,18 +140,21 @@ int main(void) {
     startup_info.wShowWindow = SW_SHOWMINIMIZED;
     startup_info.hStdInput = stdin_read;
     startup_info.hStdOutput = stdout_write;
-    startup_info.hStdError = child_stderr;
+    startup_info.hStdError = stderr_write;
     if (!CreateProcessA(NULL, mutable_command_line, NULL, NULL, TRUE, CREATE_NEW_CONSOLE,
             NULL, NULL, &startup_info, &process_info)) { ShowWin32Error("CreateProcessA"); goto cleanup; }
 
-    CloseHandle(child_stderr); child_stderr = NULL;
     CloseHandle(stdout_write); stdout_write = NULL;
+    CloseHandle(stderr_write); stderr_write = NULL;
     CloseHandle(stdin_read); stdin_read = NULL;
     CloseHandle(process_info.hThread); process_info.hThread = NULL;
     stdin_context.source = parent_stdin; stdin_context.destination = stdin_write;
     stdin_thread = CreateThread(NULL, 0, StdinThreadProc, &stdin_context, 0, NULL);
     if (stdin_thread == NULL) { ShowWin32Error("CreateThread(stdin)"); goto cleanup; }
     stdin_write = NULL;
+    stderr_context.source = stderr_read; stderr_context.destination = parent_stderr;
+    stderr_thread = CreateThread(NULL, 0, OutputThreadProc, &stderr_context, 0, NULL);
+    if (stderr_thread == NULL) { ShowWin32Error("CreateThread(stderr)"); goto cleanup; }
 
     for (;;) {
         BYTE buffer[4096]; DWORD bytes_read = 0;
@@ -135,6 +166,11 @@ int main(void) {
         if (!WriteAll(parent_stdout, buffer, bytes_read)) { ShowWin32Error("WriteFile(parent stdout)"); goto cleanup; }
     }
     if (WaitForSingleObject(process_info.hProcess, INFINITE) == WAIT_FAILED) { ShowWin32Error("WaitForSingleObject(child)"); goto cleanup; }
+    if (WaitForSingleObject(stderr_thread, INFINITE) == WAIT_FAILED) { ShowWin32Error("WaitForSingleObject(stderr)"); goto cleanup; }
+    CloseHandle(stderr_thread); stderr_thread = NULL;
+    if (stderr_context.error != ERROR_SUCCESS) {
+        SetLastError(stderr_context.error); ShowWin32Error("Redirect(stderr)"); goto cleanup;
+    }
     if (stdin_thread != NULL) {
         CancelSynchronousIo(stdin_thread); WaitForSingleObject(stdin_thread, INFINITE);
         CloseHandle(stdin_thread); stdin_thread = NULL;
@@ -144,14 +180,16 @@ int main(void) {
       exit_code = (int)child_exit_code; }
 
 cleanup:
+    if (stderr_thread != NULL) { CancelSynchronousIo(stderr_thread); WaitForSingleObject(stderr_thread, INFINITE); CloseHandle(stderr_thread); }
     if (stdin_thread != NULL) { CancelSynchronousIo(stdin_thread); WaitForSingleObject(stdin_thread, INFINITE); CloseHandle(stdin_thread); }
     if (process_info.hThread != NULL) CloseHandle(process_info.hThread);
     if (process_info.hProcess != NULL) CloseHandle(process_info.hProcess);
     if (stdout_write != NULL) CloseHandle(stdout_write);
     if (stdout_read != NULL) CloseHandle(stdout_read);
+    if (stderr_write != NULL) CloseHandle(stderr_write);
+    if (stderr_read != NULL) CloseHandle(stderr_read);
     if (stdin_read != NULL) CloseHandle(stdin_read);
     if (stdin_write != NULL) CloseHandle(stdin_write);
-    if (child_stderr != NULL) CloseHandle(child_stderr);
     free(mutable_command_line);
     return exit_code;
 }
