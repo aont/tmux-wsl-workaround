@@ -239,14 +239,18 @@ For specially handled session creation, the wrapper:
    console_redirect.exe
        wsl.exe -d <current-distribution>
        --cd <current-directory>
-       --exec /usr/bin/tmux new-session -d -P -F <format> ...
+       --exec /usr/bin/tmux new-session -d -P -F '#{session_id}' ...
    ```
 
-3. Runs the real tmux with internal `-d`, `-P`, and `-F` options.
+3. Runs the real tmux with internal `-d`, `-P`, and `-F '#{session_id}'`
+   options, so the helper returns only the immutable session ID.
 
 4. Reads the immutable tmux session ID from the helper's standard output and uses the helper's exit status.
 
-5. Preserves user-requested `-P` and `-F` output.
+5. When the user requested `-P`, obtains the printable result separately with
+   `tmux display-message -p -t <session-id> -F <user-format>`. This ensures a
+   user-specified format is evaluated against the newly created session after
+   its ID has been retrieved.
 
 6. Returns immediately if the original command included `-d`.
 
