@@ -124,13 +124,6 @@ if [ -z "$WSL_DISTRO_NAME" ]; then
     exit 1
 fi
 
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/tmux-wsl-workaround.XXXXXX") || exit 1
-result_file=$tmpdir/result
-cleanup() {
-    rm -rf "$tmpdir"
-}
-trap cleanup EXIT HUP INT TERM
-
 cmd_words=
 append_word cmd_words "$CONSOLE_REDIRECT_EXE"
 append_word cmd_words wsl.exe
@@ -149,17 +142,14 @@ append_word cmd_words -F
 append_word cmd_words '#{session_id}'
 cmd_words=${cmd_words}${tail_words}
 
-eval "$cmd_words" >"$result_file"
+session_id=$(eval "$cmd_words")
 launch_status=$?
 if [ $launch_status -ne 0 ]; then
-    cat "$result_file" >&2
+    printf '%s\n' "$session_id" >&2
     exit $launch_status
 fi
 
-IFS= read -r session_id <"$result_file"
-read_session_status=$?
-
-if [ $read_session_status -ne 0 ]; then
+if [ -z "$session_id" ]; then
     printf '%s\n' 'tmux wrapper: session ID was not returned' >&2
     exit 1
 fi
