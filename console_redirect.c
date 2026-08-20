@@ -1,23 +1,23 @@
+#define _WIN32_WINNT 0x0600
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct StdinThreadContext {
+typedef struct AsyncRead {
     HANDLE source;
     HANDLE destination;
-} StdinThreadContext;
-
-typedef struct OutputThreadContext {
-    HANDLE source;
-    HANDLE destination;
-    DWORD error;
-} OutputThreadContext;
+    OVERLAPPED overlapped;
+    BYTE buffer[4096];
+    BOOL active;
+    char const *name;
+} AsyncRead;
 
 static char const *ShiftCommandLine(char const *cmdline) {
     BOOL backslash_preceding = FALSE, inside_double_quote = FALSE, after_argv0 = FALSE;
-    for (int i = 0;; i++) {
+    int i;
+    for (i = 0;; i++) {
         char const c = cmdline[i];
         if (after_argv0) {
             if (c != ' ' && c != '\t') return cmdline + i;
@@ -64,61 +64,81 @@ static BOOL WriteAll(HANDLE handle, void const *data, DWORD size) {
     return TRUE;
 }
 
-static DWORD WINAPI StdinThreadProc(LPVOID parameter) {
-    StdinThreadContext *context = (StdinThreadContext *)parameter;
-    for (;;) {
-        BYTE buffer[4096];
-        DWORD bytes_read = 0;
-        if (!ReadFile(context->source, buffer, sizeof(buffer), &bytes_read, NULL) || bytes_read == 0) break;
-        if (!WriteAll(context->destination, buffer, bytes_read)) break;
+static BOOL CreateOverlappedPipe(HANDLE *server, HANDLE *client, DWORD server_access,
+        DWORD client_access, BOOL client_inherits) {
+    static LONG pipe_number;
+    char name[128];
+    SECURITY_ATTRIBUTES sa;
+    OVERLAPPED connect_overlapped;
+    BOOL connect_pending;
+    DWORD ignored;
+    sprintf(name, "\\\\.\\pipe\\tmux-wsl-workaround-%lu-%ld",
+        (unsigned long)GetCurrentProcessId(), (long)InterlockedIncrement(&pipe_number));
+    *server = CreateNamedPipeA(name, server_access | FILE_FLAG_OVERLAPPED,
+        PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, NULL);
+    if (*server == INVALID_HANDLE_VALUE) return FALSE;
+    ZeroMemory(&connect_overlapped, sizeof(connect_overlapped));
+    connect_overlapped.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (connect_overlapped.hEvent == NULL) {
+        CloseHandle(*server); *server = NULL; return FALSE;
     }
-    if (context->destination != NULL) {
-        CloseHandle(context->destination);
-        context->destination = NULL;
+    connect_pending = !ConnectNamedPipe(*server, &connect_overlapped);
+    if (connect_pending && GetLastError() != ERROR_IO_PENDING) {
+        CloseHandle(connect_overlapped.hEvent); CloseHandle(*server); *server = NULL;
+        return FALSE;
     }
-    return 0;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = client_inherits;
+    *client = CreateFileA(name, client_access, 0, &sa, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (*client == INVALID_HANDLE_VALUE) {
+        CancelIoEx(*server, &connect_overlapped);
+        CloseHandle(connect_overlapped.hEvent); CloseHandle(*server); *server = NULL;
+        return FALSE;
+    }
+    if (connect_pending && !GetOverlappedResult(*server, &connect_overlapped, &ignored, TRUE)) {
+        CloseHandle(*client); CloseHandle(*server); *client = NULL; *server = NULL;
+        CloseHandle(connect_overlapped.hEvent);
+        return FALSE;
+    }
+    CloseHandle(connect_overlapped.hEvent);
+    return TRUE;
 }
 
-static DWORD WINAPI OutputThreadProc(LPVOID parameter) {
-    OutputThreadContext *context = (OutputThreadContext *)parameter;
-    for (;;) {
-        BYTE buffer[4096];
-        DWORD bytes_read = 0;
-        if (!ReadFile(context->source, buffer, sizeof(buffer), &bytes_read, NULL)) {
-            DWORD error = GetLastError();
-            if (error != ERROR_BROKEN_PIPE) context->error = error;
-            break;
-        }
-        if (bytes_read == 0) break;
-        if (!WriteAll(context->destination, buffer, bytes_read)) {
-            context->error = GetLastError();
-            break;
-        }
-    }
-    return 0;
+static BOOL StartRead(AsyncRead *read) {
+    DWORD bytes_read;
+    ResetEvent(read->overlapped.hEvent);
+    read->active = TRUE;
+    if (ReadFile(read->source, read->buffer, sizeof(read->buffer), &bytes_read,
+            &read->overlapped)) return TRUE;
+    if (GetLastError() == ERROR_IO_PENDING) return TRUE;
+    read->active = FALSE;
+    return FALSE;
+}
+
+static BOOL IsEndOfPipe(DWORD error) {
+    return error == ERROR_BROKEN_PIPE || error == ERROR_HANDLE_EOF || error == ERROR_OPERATION_ABORTED;
 }
 
 int main(void) {
     char const *child_command_line = ShiftCommandLine(GetCommandLineA());
     char *mutable_command_line = NULL;
-    SECURITY_ATTRIBUTES sa;
     HANDLE stdout_read = NULL, stdout_write = NULL, stderr_read = NULL, stderr_write = NULL;
     HANDLE stdin_read = NULL, stdin_write = NULL;
-    HANDLE parent_stdin = INVALID_HANDLE_VALUE, parent_stdout = INVALID_HANDLE_VALUE;
-    HANDLE parent_stderr = INVALID_HANDLE_VALUE, stdin_thread = NULL, stderr_thread = NULL;
-    StdinThreadContext stdin_context;
-    OutputThreadContext stderr_context;
+    HANDLE parent_stdin, parent_stdout, parent_stderr;
     STARTUPINFOA startup_info;
     PROCESS_INFORMATION process_info;
+    AsyncRead reads[3];
+    BOOL child_done = FALSE;
     int exit_code = EXIT_FAILURE;
+    int i;
 
     ZeroMemory(&process_info, sizeof(process_info));
-    ZeroMemory(&stdin_context, sizeof(stdin_context));
-    ZeroMemory(&stderr_context, sizeof(stderr_context));
+    ZeroMemory(reads, sizeof(reads));
     if (*child_command_line == '\0') { fprintf(stderr, "No command line to execute was specified.\n"); goto cleanup; }
     mutable_command_line = _strdup(child_command_line);
     if (mutable_command_line == NULL) { fprintf(stderr, "Could not allocate memory for the command line.\n"); goto cleanup; }
-
     parent_stdin = GetStdHandle(STD_INPUT_HANDLE);
     parent_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
     parent_stderr = GetStdHandle(STD_ERROR_HANDLE);
@@ -126,13 +146,12 @@ int main(void) {
     if (parent_stdout == NULL || parent_stdout == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stdout)"); goto cleanup; }
     if (parent_stderr == NULL || parent_stderr == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stderr)"); goto cleanup; }
 
-    ZeroMemory(&sa, sizeof(sa)); sa.nLength = sizeof(sa); sa.bInheritHandle = TRUE;
-    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0)) { ShowWin32Error("CreatePipe(stdout)"); goto cleanup; }
-    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stdout)"); goto cleanup; }
-    if (!CreatePipe(&stderr_read, &stderr_write, &sa, 0)) { ShowWin32Error("CreatePipe(stderr)"); goto cleanup; }
-    if (!SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stderr)"); goto cleanup; }
-    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0)) { ShowWin32Error("CreatePipe(stdin)"); goto cleanup; }
-    if (!SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0)) { ShowWin32Error("SetHandleInformation(stdin)"); goto cleanup; }
+    if (!CreateOverlappedPipe(&stdout_read, &stdout_write, PIPE_ACCESS_INBOUND,
+            GENERIC_WRITE, TRUE)) { ShowWin32Error("CreateNamedPipe(stdout)"); goto cleanup; }
+    if (!CreateOverlappedPipe(&stderr_read, &stderr_write, PIPE_ACCESS_INBOUND,
+            GENERIC_WRITE, TRUE)) { ShowWin32Error("CreateNamedPipe(stderr)"); goto cleanup; }
+    if (!CreateOverlappedPipe(&stdin_write, &stdin_read, PIPE_ACCESS_OUTBOUND,
+            GENERIC_READ, TRUE)) { ShowWin32Error("CreateNamedPipe(stdin)"); goto cleanup; }
 
     ZeroMemory(&startup_info, sizeof(startup_info));
     startup_info.cb = sizeof(startup_info);
@@ -143,45 +162,80 @@ int main(void) {
     startup_info.hStdError = stderr_write;
     if (!CreateProcessA(NULL, mutable_command_line, NULL, NULL, TRUE, CREATE_NEW_CONSOLE,
             NULL, NULL, &startup_info, &process_info)) { ShowWin32Error("CreateProcessA"); goto cleanup; }
-
     CloseHandle(stdout_write); stdout_write = NULL;
     CloseHandle(stderr_write); stderr_write = NULL;
     CloseHandle(stdin_read); stdin_read = NULL;
     CloseHandle(process_info.hThread); process_info.hThread = NULL;
-    stdin_context.source = parent_stdin; stdin_context.destination = stdin_write;
-    stdin_thread = CreateThread(NULL, 0, StdinThreadProc, &stdin_context, 0, NULL);
-    if (stdin_thread == NULL) { ShowWin32Error("CreateThread(stdin)"); goto cleanup; }
-    stdin_write = NULL;
-    stderr_context.source = stderr_read; stderr_context.destination = parent_stderr;
-    stderr_thread = CreateThread(NULL, 0, OutputThreadProc, &stderr_context, 0, NULL);
-    if (stderr_thread == NULL) { ShowWin32Error("CreateThread(stderr)"); goto cleanup; }
 
-    for (;;) {
-        BYTE buffer[4096]; DWORD bytes_read = 0;
-        if (!ReadFile(stdout_read, buffer, sizeof(buffer), &bytes_read, NULL)) {
-            if (GetLastError() == ERROR_BROKEN_PIPE) break;
-            ShowWin32Error("ReadFile(stdout)"); goto cleanup;
+    reads[0].source = parent_stdin; reads[0].destination = stdin_write; reads[0].name = "ReadFile(stdin)";
+    reads[1].source = stdout_read; reads[1].destination = parent_stdout; reads[1].name = "ReadFile(stdout)";
+    reads[2].source = stderr_read; reads[2].destination = parent_stderr; reads[2].name = "ReadFile(stderr)";
+    for (i = 0; i < 3; i++) {
+        reads[i].overlapped.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+        if (reads[i].overlapped.hEvent == NULL) { ShowWin32Error("CreateEvent"); goto cleanup; }
+        if (!StartRead(&reads[i])) { ShowWin32Error(reads[i].name); goto cleanup; }
+    }
+
+    while (reads[1].active || reads[2].active || !child_done) {
+        HANDLE events[4];
+        int indexes[4];
+        DWORD count = 0, wait_result;
+        for (i = 0; i < 3; i++) if (reads[i].active) {
+            events[count] = reads[i].overlapped.hEvent; indexes[count++] = i;
         }
-        if (bytes_read == 0) break;
-        if (!WriteAll(parent_stdout, buffer, bytes_read)) { ShowWin32Error("WriteFile(parent stdout)"); goto cleanup; }
+        if (!child_done) { events[count] = process_info.hProcess; indexes[count++] = 3; }
+        wait_result = WaitForMultipleObjects(count, events, FALSE, INFINITE);
+        if (wait_result < WAIT_OBJECT_0 || wait_result >= WAIT_OBJECT_0 + count) {
+            ShowWin32Error("WaitForMultipleObjects"); goto cleanup;
+        }
+        i = indexes[wait_result - WAIT_OBJECT_0];
+        if (i == 3) {
+            child_done = TRUE;
+            if (reads[0].active) CancelIoEx(reads[0].source, &reads[0].overlapped);
+            if (stdin_write != NULL) { CloseHandle(stdin_write); stdin_write = NULL; }
+            continue;
+        }
+        {
+            DWORD bytes_read = 0;
+            AsyncRead *read = &reads[i];
+            read->active = FALSE;
+            if (!GetOverlappedResult(read->source, &read->overlapped, &bytes_read, FALSE)) {
+                DWORD error = GetLastError();
+                if (!IsEndOfPipe(error)) { SetLastError(error); ShowWin32Error(read->name); goto cleanup; }
+                if (i == 0 && stdin_write != NULL) { CloseHandle(stdin_write); stdin_write = NULL; }
+                continue;
+            }
+            if (bytes_read == 0) {
+                if (i == 0 && stdin_write != NULL) { CloseHandle(stdin_write); stdin_write = NULL; }
+                continue;
+            }
+            if (!WriteAll(read->destination, read->buffer, bytes_read)) {
+                if (i == 0 && IsEndOfPipe(GetLastError())) {
+                    if (stdin_write != NULL) { CloseHandle(stdin_write); stdin_write = NULL; }
+                    continue;
+                }
+                ShowWin32Error(i == 0 ? "WriteFile(child stdin)" :
+                    (i == 1 ? "WriteFile(parent stdout)" : "WriteFile(parent stderr)"));
+                goto cleanup;
+            }
+            if (!StartRead(read)) { ShowWin32Error(read->name); goto cleanup; }
+        }
     }
-    if (WaitForSingleObject(process_info.hProcess, INFINITE) == WAIT_FAILED) { ShowWin32Error("WaitForSingleObject(child)"); goto cleanup; }
-    if (WaitForSingleObject(stderr_thread, INFINITE) == WAIT_FAILED) { ShowWin32Error("WaitForSingleObject(stderr)"); goto cleanup; }
-    CloseHandle(stderr_thread); stderr_thread = NULL;
-    if (stderr_context.error != ERROR_SUCCESS) {
-        SetLastError(stderr_context.error); ShowWin32Error("Redirect(stderr)"); goto cleanup;
+    {
+        DWORD child_exit_code;
+        if (!GetExitCodeProcess(process_info.hProcess, &child_exit_code)) { ShowWin32Error("GetExitCodeProcess"); goto cleanup; }
+        exit_code = (int)child_exit_code;
     }
-    if (stdin_thread != NULL) {
-        CancelSynchronousIo(stdin_thread); WaitForSingleObject(stdin_thread, INFINITE);
-        CloseHandle(stdin_thread); stdin_thread = NULL;
-    }
-    { DWORD child_exit_code = 0;
-      if (!GetExitCodeProcess(process_info.hProcess, &child_exit_code)) { ShowWin32Error("GetExitCodeProcess"); goto cleanup; }
-      exit_code = (int)child_exit_code; }
 
 cleanup:
-    if (stderr_thread != NULL) { CancelSynchronousIo(stderr_thread); WaitForSingleObject(stderr_thread, INFINITE); CloseHandle(stderr_thread); }
-    if (stdin_thread != NULL) { CancelSynchronousIo(stdin_thread); WaitForSingleObject(stdin_thread, INFINITE); CloseHandle(stdin_thread); }
+    for (i = 0; i < 3; i++) {
+        if (reads[i].active) {
+            DWORD ignored;
+            CancelIoEx(reads[i].source, &reads[i].overlapped);
+            GetOverlappedResult(reads[i].source, &reads[i].overlapped, &ignored, TRUE);
+        }
+        if (reads[i].overlapped.hEvent != NULL) CloseHandle(reads[i].overlapped.hEvent);
+    }
     if (process_info.hThread != NULL) CloseHandle(process_info.hThread);
     if (process_info.hProcess != NULL) CloseHandle(process_info.hProcess);
     if (stdout_write != NULL) CloseHandle(stdout_write);
