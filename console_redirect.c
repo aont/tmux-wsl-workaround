@@ -78,7 +78,8 @@ int main(void) {
     char *mutable_command_line = NULL;
     SECURITY_ATTRIBUTES sa;
     HANDLE stdout_read = NULL, stdout_write = NULL, stdin_read = NULL, stdin_write = NULL;
-    HANDLE parent_stdin = INVALID_HANDLE_VALUE, parent_stdout = INVALID_HANDLE_VALUE, stdin_thread = NULL;
+    HANDLE parent_stdin = INVALID_HANDLE_VALUE, parent_stdout = INVALID_HANDLE_VALUE;
+    HANDLE parent_stderr = INVALID_HANDLE_VALUE, child_stderr = NULL, stdin_thread = NULL;
     StdinThreadContext stdin_context;
     STARTUPINFOA startup_info;
     PROCESS_INFORMATION process_info;
@@ -92,8 +93,12 @@ int main(void) {
 
     parent_stdin = GetStdHandle(STD_INPUT_HANDLE);
     parent_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    parent_stderr = GetStdHandle(STD_ERROR_HANDLE);
     if (parent_stdin == NULL || parent_stdin == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stdin)"); goto cleanup; }
     if (parent_stdout == NULL || parent_stdout == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stdout)"); goto cleanup; }
+    if (parent_stderr == NULL || parent_stderr == INVALID_HANDLE_VALUE) { ShowWin32Error("GetStdHandle(stderr)"); goto cleanup; }
+    if (!DuplicateHandle(GetCurrentProcess(), parent_stderr, GetCurrentProcess(), &child_stderr,
+            0, TRUE, DUPLICATE_SAME_ACCESS)) { ShowWin32Error("DuplicateHandle(stderr)"); goto cleanup; }
 
     ZeroMemory(&sa, sizeof(sa)); sa.nLength = sizeof(sa); sa.bInheritHandle = TRUE;
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0)) { ShowWin32Error("CreatePipe(stdout)"); goto cleanup; }
@@ -107,10 +112,11 @@ int main(void) {
     startup_info.wShowWindow = SW_SHOWMINIMIZED;
     startup_info.hStdInput = stdin_read;
     startup_info.hStdOutput = stdout_write;
-    startup_info.hStdError = stdout_write;
+    startup_info.hStdError = child_stderr;
     if (!CreateProcessA(NULL, mutable_command_line, NULL, NULL, TRUE, CREATE_NEW_CONSOLE,
             NULL, NULL, &startup_info, &process_info)) { ShowWin32Error("CreateProcessA"); goto cleanup; }
 
+    CloseHandle(child_stderr); child_stderr = NULL;
     CloseHandle(stdout_write); stdout_write = NULL;
     CloseHandle(stdin_read); stdin_read = NULL;
     CloseHandle(process_info.hThread); process_info.hThread = NULL;
@@ -145,6 +151,7 @@ cleanup:
     if (stdout_read != NULL) CloseHandle(stdout_read);
     if (stdin_read != NULL) CloseHandle(stdin_read);
     if (stdin_write != NULL) CloseHandle(stdin_write);
+    if (child_stderr != NULL) CloseHandle(child_stderr);
     free(mutable_command_line);
     return exit_code;
 }
