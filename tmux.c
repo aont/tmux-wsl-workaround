@@ -10,7 +10,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define SEP_CHAR '\037'
 #ifndef TMUX_BIN
 #define TMUX_BIN "/usr/bin/tmux"
 #endif
@@ -33,15 +32,6 @@ static char *xstrdup(const char *s) {
     char *copy = strdup(s ? s : "");
     if (copy == NULL) die("strdup");
     return copy;
-}
-
-static char *xasprintf2(const char *a, const char *b) {
-    size_t len = strlen(a) + strlen(b) + 1;
-    char *out = malloc(len);
-    if (out == NULL) die("malloc");
-    memcpy(out, a, strlen(a));
-    memcpy(out + strlen(a), b, strlen(b) + 1);
-    return out;
 }
 
 static void vec_push(struct vec *vec, const char *s) {
@@ -88,44 +78,39 @@ static int plausible_session_id(const char *s) {
     return 1;
 }
 
-static int drain_result_fd(int fd, char **session_id, int print_visible) {
+static char *read_result_fd(int fd) {
     size_t cap = 128, len = 0;
-    char *sid = malloc(cap);
-    if (sid == NULL) die("malloc");
-    int saw_sep = 0;
+    char *result = malloc(cap);
+    if (result == NULL) die("malloc");
     for (;;) {
-        char ch;
-        ssize_t n = read(fd, &ch, 1);
-        if (n == 1) {
-            if (!saw_sep) {
-                if (ch == SEP_CHAR) {
-                    saw_sep = 1;
-                    sid[len] = '\0';
-                } else {
-                    if (len + 1 >= cap) {
-                        cap *= 2;
-                        char *new_sid = realloc(sid, cap);
-                        if (new_sid == NULL) die("realloc");
-                        sid = new_sid;
-                    }
-                    sid[len++] = ch;
-                }
-            } else if (print_visible) {
-                if (write(STDOUT_FILENO, &ch, 1) < 0) die("write");
-            }
-            continue;
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *new_result = realloc(result, cap);
+            if (new_result == NULL) die("realloc");
+            result = new_result;
         }
+        ssize_t n = read(fd, result + len, cap - len - 1);
+        if (n > 0) { len += (size_t)n; continue; }
         if (n == 0) break;
         if (errno == EINTR) continue;
         die("read console redirect output");
     }
-    if (!saw_sep) {
-        sid[len] = '\0';
-        *session_id = sid;
-        return 0;
+    result[len] = '\0';
+    return result;
+}
+
+static int run_and_wait(char **argv) {
+    pid_t pid = fork();
+    if (pid < 0) die("fork");
+    if (pid == 0) {
+        execv(argv[0], argv);
+        perror(argv[0]);
+        _exit(127);
     }
-    *session_id = sid;
-    return 1;
+    int status;
+    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) die("waitpid");
+    if (!WIFEXITED(status)) return 1;
+    return WEXITSTATUS(status);
 }
 
 int main(int argc, char **argv) {
@@ -173,9 +158,9 @@ int main(int argc, char **argv) {
         if (opt == 'P') user_print = 1;
         if (opt == '?') passthrough(tmux_bin, argc - 1, argv);
 
-        vec_push(&new_opts, opt_s);
+        if (opt != 'F') vec_push(&new_opts, opt_s);
         if (strchr("ceFfnstxy", opt) != NULL) {
-            vec_push(&new_opts, optarg);
+            if (opt != 'F') vec_push(&new_opts, optarg);
             if (opt == 'F') { user_format_specified = 1; user_format = optarg; }
             if (opt == 'f') client_flags = optarg;
         }
@@ -189,17 +174,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const char *visible = user_print ? (user_format_specified ? user_format : "#{session_name}:") : "";
-    char sep_s[2] = { SEP_CHAR, 0 };
-    char *fmt_prefix = xasprintf2("#{session_id}", sep_s);
-    char *internal_format = xasprintf2(fmt_prefix, visible);
-
     struct vec cmd = {0};
     vec_push(&cmd, console_redirect_exe); vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
     vec_push(&cmd, "--cd"); vec_push(&cmd, start_dir); vec_push(&cmd, "--exec");
     vec_push(&cmd, tmux_bin);
     vec_extend(&cmd, &global); vec_push(&cmd, "new-session"); vec_extend(&cmd, &new_opts);
-    vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, internal_format); vec_extend(&cmd, &tail);
+    vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, "#{session_id}"); vec_extend(&cmd, &tail);
 
     int output_pipe[2];
     if (pipe(output_pipe) < 0) die("pipe");
@@ -215,24 +195,38 @@ int main(int argc, char **argv) {
     }
     close(output_pipe[1]);
 
-    char *session_id = NULL;
-    int got_session = drain_result_fd(output_pipe[0], &session_id, user_print);
+    char *session_id = read_result_fd(output_pipe[0]);
     close(output_pipe[0]);
     int wait_status;
     while (waitpid(pid, &wait_status, 0) < 0) if (errno != EINTR) die("waitpid");
     if (!WIFEXITED(wait_status)) return 1;
     if (WEXITSTATUS(wait_status) != 0) {
-        if (!got_session && session_id != NULL)
-            fputs(session_id, stderr);
+        fputs(session_id, stderr);
         return WEXITSTATUS(wait_status);
     }
-    if (!got_session) {
+    size_t session_id_len = strlen(session_id);
+    if (session_id_len > 0 && session_id[session_id_len - 1] == '\n')
+        session_id[--session_id_len] = '\0';
+    if (session_id_len > 0 && session_id[session_id_len - 1] == '\r')
+        session_id[--session_id_len] = '\0';
+    if (session_id_len == 0) {
         fprintf(stderr, "tmux wrapper: session ID was not returned\n");
         return 1;
     }
     if (!plausible_session_id(session_id)) {
         fprintf(stderr, "tmux wrapper: invalid session ID: %s\n", session_id);
         return 1;
+    }
+
+    if (user_print) {
+        struct vec display = {0};
+        vec_push(&display, tmux_bin); vec_extend(&display, &global);
+        vec_push(&display, "display-message"); vec_push(&display, "-p");
+        vec_push(&display, "-t"); vec_push(&display, session_id);
+        vec_push(&display, "-F");
+        vec_push(&display, user_format_specified ? user_format : "#{session_name}:");
+        int display_status = run_and_wait(display.v);
+        if (display_status != 0) return display_status;
     }
     if (user_detached) return 0;
 
