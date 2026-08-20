@@ -2,24 +2,20 @@
 
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/types.h>
-#include <time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define SEP_CHAR '\037'
-#define LAUNCH_TIMEOUT_MS 30000
 #ifndef TMUX_BIN
 #define TMUX_BIN "/usr/bin/tmux"
 #endif
-#ifndef CMD_EXE
-#define CMD_EXE "/mnt/c/Windows/System32/cmd.exe"
+#ifndef CONSOLE_REDIRECT_EXE
+#define CONSOLE_REDIRECT_EXE "/usr/local/bin/console_redirect.exe"
 #endif
 
 struct vec {
@@ -28,34 +24,9 @@ struct vec {
     size_t cap;
 };
 
-static char *tmpdir;
-
-static void cleanup(void) {
-    if (tmpdir != NULL) {
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/result.fifo", tmpdir);
-        unlink(path);
-        snprintf(path, sizeof(path), "%s/status.fifo", tmpdir);
-        unlink(path);
-        rmdir(tmpdir);
-    }
-}
-
-static void on_signal(int sig) {
-    cleanup();
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
 static void die(const char *msg) {
     perror(msg);
     exit(1);
-}
-
-static long long monotonic_ms(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) die("clock_gettime");
-    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static char *xstrdup(const char *s) {
@@ -117,18 +88,6 @@ static int plausible_session_id(const char *s) {
     return 1;
 }
 
-static int read_status_fd(int fd, int *status) {
-    char buf[64];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    if (n <= 0) return 0;
-    buf[n] = '\0';
-    char *end = NULL;
-    long val = strtol(buf, &end, 10);
-    if (end == buf || val < 0 || val > 255) return 0;
-    *status = (int)val;
-    return 1;
-}
-
 static int drain_result_fd(int fd, char **session_id, int print_visible) {
     size_t cap = 128, len = 0;
     char *sid = malloc(cap);
@@ -157,15 +116,12 @@ static int drain_result_fd(int fd, char **session_id, int print_visible) {
             continue;
         }
         if (n == 0) break;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLHUP };
-            (void)poll(&pfd, 1, 100);
-            continue;
-        }
-        die("read result fifo");
+        if (errno == EINTR) continue;
+        die("read console redirect output");
     }
     if (!saw_sep) {
-        free(sid);
+        sid[len] = '\0';
+        *session_id = sid;
         return 0;
     }
     *session_id = sid;
@@ -174,7 +130,7 @@ static int drain_result_fd(int fd, char **session_id, int print_visible) {
 
 int main(int argc, char **argv) {
     const char *tmux_bin = TMUX_BIN;
-    const char *cmd_exe = CMD_EXE;
+    const char *console_redirect_exe = CONSOLE_REDIRECT_EXE;
     const char *distro = getenv("WSL_DISTRO_NAME");
     if (!distro) distro = "";
 
@@ -229,7 +185,7 @@ int main(int argc, char **argv) {
     for (i = optind; i < argc; i++) vec_push(&tail, argv[i]);
 
     if (!*distro) {
-        fprintf(stderr, "tmux wrapper: WSL_DISTRO_NAME must be set for FIFO transport\n");
+        fprintf(stderr, "tmux wrapper: WSL_DISTRO_NAME must be set\n");
         return 1;
     }
 
@@ -238,71 +194,38 @@ int main(int argc, char **argv) {
     char *fmt_prefix = xasprintf2("#{session_id}", sep_s);
     char *internal_format = xasprintf2(fmt_prefix, visible);
 
-    char tmpl[4096];
-    snprintf(tmpl, sizeof(tmpl), "%s/tmux-wsl-workaround.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
-    tmpdir = mkdtemp(tmpl);
-    if (tmpdir == NULL) die("mkdtemp");
-    tmpdir = xstrdup(tmpdir);
-    atexit(cleanup);
-    signal(SIGHUP, on_signal); signal(SIGINT, on_signal); signal(SIGTERM, on_signal);
-
-    char result_fifo[4096], status_fifo[4096];
-    snprintf(result_fifo, sizeof(result_fifo), "%s/result.fifo", tmpdir);
-    snprintf(status_fifo, sizeof(status_fifo), "%s/status.fifo", tmpdir);
-    if (mkfifo(result_fifo, 0600) < 0 || mkfifo(status_fifo, 0600) < 0) die("mkfifo");
-
     struct vec cmd = {0};
-    vec_push(&cmd, cmd_exe); vec_push(&cmd, "/c"); vec_push(&cmd, "start"); vec_push(&cmd, "");
-    vec_push(&cmd, "/min"); vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
+    vec_push(&cmd, console_redirect_exe); vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
     vec_push(&cmd, "--cd"); vec_push(&cmd, start_dir); vec_push(&cmd, "--exec");
-    vec_push(&cmd, "/bin/sh"); vec_push(&cmd, "-c");
-    vec_push(&cmd, "fifo=$1; status_fifo=$2; shift 2; \"$@\" >\"$fifo\"; status=$?; printf '%s\\n' \"$status\" >\"$status_fifo\"; exit \"$status\"");
-    vec_push(&cmd, "tmux-wsl-workaround"); vec_push(&cmd, result_fifo); vec_push(&cmd, status_fifo); vec_push(&cmd, tmux_bin);
+    vec_push(&cmd, tmux_bin);
     vec_extend(&cmd, &global); vec_push(&cmd, "new-session"); vec_extend(&cmd, &new_opts);
     vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, internal_format); vec_extend(&cmd, &tail);
 
-    if (chdir("/mnt/c") < 0) die("chdir /mnt/c");
+    int output_pipe[2];
+    if (pipe(output_pipe) < 0) die("pipe");
     pid_t pid = fork();
     if (pid < 0) die("fork");
-    if (pid == 0) { execv(cmd_exe, cmd.v); _exit(127); }
-
-    int rfd = open(result_fifo, O_RDONLY | O_NONBLOCK);
-    int sfd = open(status_fifo, O_RDONLY | O_NONBLOCK);
-    if (rfd < 0 || sfd < 0) die("open fifo");
-
-    int status = -1;
-    long long deadline = monotonic_ms() + LAUNCH_TIMEOUT_MS;
-    while (status < 0) {
-        if (read_status_fd(sfd, &status)) break;
-
-        long long remaining = deadline - monotonic_ms();
-        if (remaining <= 0) break;
-
-        struct pollfd pfd = { .fd = sfd, .events = POLLIN };
-        int timeout = remaining > 100 ? 100 : (int)remaining;
-        int rc;
-        do {
-            rc = poll(&pfd, 1, timeout);
-        } while (rc < 0 && errno == EINTR);
-        if (rc < 0) die("poll status fifo");
-        if (pfd.revents & (POLLERR | POLLNVAL)) {
-            errno = EIO;
-            die("poll status fifo");
-        }
-        if ((pfd.revents & POLLHUP) && !(pfd.revents & POLLIN)) {
-            fprintf(stderr, "tmux wrapper: WSL launch closed status FIFO without returning a status\n");
-            return 1;
-        }
+    if (pid == 0) {
+        close(output_pipe[0]);
+        if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+        close(output_pipe[1]);
+        execv(console_redirect_exe, cmd.v);
+        perror(console_redirect_exe);
+        _exit(127);
     }
-    if (status < 0) {
-        fprintf(stderr, "tmux wrapper: timed out waiting for WSL launch result\n");
-        return 1;
-    }
+    close(output_pipe[1]);
 
     char *session_id = NULL;
-    int got_session = drain_result_fd(rfd, &session_id, user_print);
-    close(rfd); close(sfd);
-    if (status != 0) return status;
+    int got_session = drain_result_fd(output_pipe[0], &session_id, user_print);
+    close(output_pipe[0]);
+    int wait_status;
+    while (waitpid(pid, &wait_status, 0) < 0) if (errno != EINTR) die("waitpid");
+    if (!WIFEXITED(wait_status)) return 1;
+    if (WEXITSTATUS(wait_status) != 0) {
+        if (!got_session && session_id != NULL)
+            fputs(session_id, stderr);
+        return WEXITSTATUS(wait_status);
+    }
     if (!got_session) {
         fprintf(stderr, "tmux wrapper: session ID was not returned\n");
         return 1;
