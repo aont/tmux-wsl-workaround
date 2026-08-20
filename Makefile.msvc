@@ -1,0 +1,10 @@
+CC = cl
+CFLAGS = /utf-8 /W4 /O2
+
+all: console_redirect.exe
+
+console_redirect.exe: console_redirect.c
+	$(CC) $(CFLAGS) console_redirect.c /Fe:console_redirect.exe /link /SUBSYSTEM:CONSOLE
+
+clean:
+	-del /Q console_redirect.exe console_redirect.obj 2>NUL
