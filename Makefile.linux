@@ -15,8 +15,9 @@ tmux-wsl-workaround: tmux.c
 	$(CC) $(CPPFLAGS) -DTMUX_BIN=\"$(TMUX_BIN)\" -DCONSOLE_REDIRECT_EXE=\"$(CONSOLE_REDIRECT_EXE)\" $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 install: tmux-wsl-workaround
-	install -d $(DESTDIR)$(BINDIR)
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(dir $(CONSOLE_REDIRECT_EXE))
 	install -m 0755 tmux-wsl-workaround $(DESTDIR)$(BINDIR)/tmux
+	install -m 0755 console_redirect.exe $(DESTDIR)$(CONSOLE_REDIRECT_EXE)
 
 clean:
 	rm -f tmux-wsl-workaround
