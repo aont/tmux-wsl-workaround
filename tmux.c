@@ -89,9 +89,15 @@ static void vec_extend(struct vec *dst, const struct vec *src) {
     for (size_t i = 0; i < src->n; i++) vec_push(dst, src->v[i]);
 }
 
-static void set_terminal_title(void) {
-    const char title[] = "\033]0;tmux\007";
-    ssize_t ignored = write(STDOUT_FILENO, title, sizeof(title) - 1);
+static void save_terminal_title(void) {
+    const char save[] = "\033[22;2t";
+    ssize_t ignored = write(STDOUT_FILENO, save, sizeof(save) - 1);
+    (void)ignored;
+}
+
+static void restore_terminal_title(void) {
+    const char restore[] = "\033[23;2t";
+    ssize_t ignored = write(STDOUT_FILENO, restore, sizeof(restore) - 1);
     (void)ignored;
 }
 
@@ -101,7 +107,7 @@ static void passthrough(const char *tmux_bin, int argc, char **argv) {
     exec_argv[0] = (char *)tmux_bin;
     for (int i = 1; i <= argc; i++) exec_argv[i] = argv[i];
     exec_argv[argc + 1] = NULL;
-    set_terminal_title();
+    restore_terminal_title();
     execv(tmux_bin, exec_argv);
     die(tmux_bin);
 }
@@ -173,6 +179,8 @@ static int drain_result_fd(int fd, char **session_id, int print_visible) {
 }
 
 int main(int argc, char **argv) {
+    save_terminal_title();
+
     const char *tmux_bin = TMUX_BIN;
     const char *cmd_exe = CMD_EXE;
     const char *distro = getenv("WSL_DISTRO_NAME");
@@ -318,7 +326,7 @@ int main(int argc, char **argv) {
     if (no_update_env) vec_push(&attach, "-E");
     if (client_flags) { vec_push(&attach, "-f"); vec_push(&attach, client_flags); }
     vec_push(&attach, "-t"); vec_push(&attach, session_id);
-    set_terminal_title();
+    restore_terminal_title();
     execv(tmux_bin, attach.v);
     die(tmux_bin);
 }
