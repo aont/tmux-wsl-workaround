@@ -3,7 +3,7 @@
 # not bash, so do not use arrays or bash-only syntax here.
 
 TMUX_BIN=${TMUX_BIN:-/usr/bin/tmux}
-CONSOLE_REDIRECT_EXE=${CONSOLE_REDIRECT_EXE:-/usr/local/bin/console_redirect.exe}
+CONSOLE_REDIRECT_EXE=${CONSOLE_REDIRECT_EXE:-/usr/local/libexec/console_redirect.exe}
 WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-}
 
 quote_arg() {

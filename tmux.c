@@ -14,7 +14,7 @@
 #define TMUX_BIN "/usr/bin/tmux"
 #endif
 #ifndef CONSOLE_REDIRECT_EXE
-#define CONSOLE_REDIRECT_EXE "/usr/local/bin/console_redirect.exe"
+#define CONSOLE_REDIRECT_EXE "/usr/local/libexec/console_redirect.exe"
 #endif
 
 struct vec {
