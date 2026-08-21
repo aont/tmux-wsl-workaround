@@ -10,10 +10,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-#define SEP_CHAR '\037'
 #define LAUNCH_TIMEOUT_MS 30000
 #ifndef TMUX_BIN
 #define TMUX_BIN "/usr/bin/tmux"
@@ -62,15 +62,6 @@ static char *xstrdup(const char *s) {
     char *copy = strdup(s ? s : "");
     if (copy == NULL) die("strdup");
     return copy;
-}
-
-static char *xasprintf2(const char *a, const char *b) {
-    size_t len = strlen(a) + strlen(b) + 1;
-    char *out = malloc(len);
-    if (out == NULL) die("malloc");
-    memcpy(out, a, strlen(a));
-    memcpy(out + strlen(a), b, strlen(b) + 1);
-    return out;
 }
 
 static void vec_push(struct vec *vec, const char *s) {
@@ -135,31 +126,21 @@ static int read_status_fd(int fd, int *status) {
     return 1;
 }
 
-static int drain_result_fd(int fd, char **session_id, int print_visible) {
+static int read_session_id_fd(int fd, char **session_id) {
     size_t cap = 128, len = 0;
     char *sid = malloc(cap);
     if (sid == NULL) die("malloc");
-    int saw_sep = 0;
     for (;;) {
         char ch;
         ssize_t n = read(fd, &ch, 1);
         if (n == 1) {
-            if (!saw_sep) {
-                if (ch == SEP_CHAR) {
-                    saw_sep = 1;
-                    sid[len] = '\0';
-                } else {
-                    if (len + 1 >= cap) {
-                        cap *= 2;
-                        char *new_sid = realloc(sid, cap);
-                        if (new_sid == NULL) die("realloc");
-                        sid = new_sid;
-                    }
-                    sid[len++] = ch;
-                }
-            } else if (print_visible) {
-                if (write(STDOUT_FILENO, &ch, 1) < 0) die("write");
+            if (len + 1 >= cap) {
+                cap *= 2;
+                char *new_sid = realloc(sid, cap);
+                if (new_sid == NULL) die("realloc");
+                sid = new_sid;
             }
+            sid[len++] = ch;
             continue;
         }
         if (n == 0) break;
@@ -170,11 +151,30 @@ static int drain_result_fd(int fd, char **session_id, int print_visible) {
         }
         die("read result fifo");
     }
-    if (!saw_sep) {
+    while (len > 0 && (sid[len - 1] == '\n' || sid[len - 1] == '\r')) len--;
+    sid[len] = '\0';
+    if (len == 0) {
         free(sid);
         return 0;
     }
     *session_id = sid;
+    return 1;
+}
+
+static int run_and_wait(const struct vec *command) {
+    pid_t pid = fork();
+    if (pid < 0) die("fork");
+    if (pid == 0) {
+        execv(command->v[0], command->v);
+        _exit(127);
+    }
+
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) die("waitpid");
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return 1;
 }
 
@@ -225,9 +225,9 @@ int main(int argc, char **argv) {
         if (opt == 'P') user_print = 1;
         if (opt == '?') passthrough(tmux_bin, argc - 1, argv);
 
-        vec_push(&new_opts, opt_s);
+        if (opt != 'F') vec_push(&new_opts, opt_s);
         if (strchr("ceFfnstxy", opt) != NULL) {
-            vec_push(&new_opts, optarg);
+            if (opt != 'F') vec_push(&new_opts, optarg);
             if (opt == 'F') { user_format_specified = 1; user_format = optarg; }
             if (opt == 'f') client_flags = optarg;
         }
@@ -240,11 +240,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "tmux wrapper: WSL_DISTRO_NAME must be set for FIFO transport\n");
         return 1;
     }
-
-    const char *visible = user_print ? (user_format_specified ? user_format : "#{session_name}:") : "";
-    char sep_s[2] = { SEP_CHAR, 0 };
-    char *fmt_prefix = xasprintf2("#{session_id}", sep_s);
-    char *internal_format = xasprintf2(fmt_prefix, visible);
 
     char tmpl[4096];
     snprintf(tmpl, sizeof(tmpl), "%s/tmux-wsl-workaround.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
@@ -267,7 +262,7 @@ int main(int argc, char **argv) {
     vec_push(&cmd, "fifo=$1; status_fifo=$2; shift 2; \"$@\" >\"$fifo\"; status=$?; printf '%s\\n' \"$status\" >\"$status_fifo\"; exit \"$status\"");
     vec_push(&cmd, "tmux-wsl-workaround"); vec_push(&cmd, result_fifo); vec_push(&cmd, status_fifo); vec_push(&cmd, tmux_bin);
     vec_extend(&cmd, &global); vec_push(&cmd, "new-session"); vec_extend(&cmd, &new_opts);
-    vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, internal_format); vec_extend(&cmd, &tail);
+    vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, "#{session_id}"); vec_extend(&cmd, &tail);
 
     if (chdir("/mnt/c") < 0) die("chdir /mnt/c");
     pid_t pid = fork();
@@ -308,7 +303,7 @@ int main(int argc, char **argv) {
     }
 
     char *session_id = NULL;
-    int got_session = drain_result_fd(rfd, &session_id, user_print);
+    int got_session = read_session_id_fd(rfd, &session_id);
     close(rfd); close(sfd);
     if (status != 0) return status;
     if (!got_session) {
@@ -318,6 +313,17 @@ int main(int argc, char **argv) {
     if (!plausible_session_id(session_id)) {
         fprintf(stderr, "tmux wrapper: invalid session ID: %s\n", session_id);
         return 1;
+    }
+
+    if (user_print) {
+        struct vec display = {0};
+        vec_push(&display, tmux_bin); vec_extend(&display, &global);
+        vec_push(&display, "display-message"); vec_push(&display, "-p");
+        vec_push(&display, "-t"); vec_push(&display, session_id);
+        vec_push(&display, "-F");
+        vec_push(&display, user_format_specified ? user_format : "#{session_name}:");
+        int display_status = run_and_wait(&display);
+        if (display_status != 0) return display_status;
     }
     if (user_detached) return 0;
 
