@@ -1,5 +1,4 @@
 CC ?= cc
-WINDOWS_CC ?= x86_64-w64-mingw32-gcc
 CPPFLAGS ?=
 CFLAGS ?= -std=c99 -Wall -Wextra -O2
 LDFLAGS ?=
@@ -12,7 +11,7 @@ LAUNCH_BIN ?= $(LIBEXECDIR)/tmux-wsl-launch
 
 .PHONY: all clean install
 
-all: tmux-wsl-workaround tmux-wsl-launch conpty.exe
+all: tmux-wsl-workaround tmux-wsl-launch
 
 tmux-wsl-workaround: tmux.c
 	$(CC) $(CPPFLAGS) -DTMUX_BIN=\"$(TMUX_BIN)\" -DCONPTY_EXE=\"$(CONPTY_EXE)\" -DLAUNCH_BIN=\"$(LAUNCH_BIN)\" $(CFLAGS) $(LDFLAGS) -o $@ tmux.c
@@ -20,15 +19,11 @@ tmux-wsl-workaround: tmux.c
 tmux-wsl-launch: tmux-wsl-launch.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ tmux-wsl-launch.c
 
-conpty.exe: conpty.c
-	$(WINDOWS_CC) -std=c99 -Wall -Wextra -O2 -municode -o $@ conpty.c
-
-install: tmux-wsl-workaround tmux-wsl-launch conpty.exe
+install: tmux-wsl-workaround tmux-wsl-launch
 	install -d $(DESTDIR)$(BINDIR)
 	install -d $(DESTDIR)$(LIBEXECDIR)
 	install -m 0755 tmux-wsl-workaround $(DESTDIR)$(BINDIR)/tmux
 	install -m 0755 tmux-wsl-launch $(DESTDIR)$(LAUNCH_BIN)
-	install -m 0755 conpty.exe $(DESTDIR)$(CONPTY_EXE)
 
 clean:
-	rm -f tmux-wsl-workaround tmux-wsl-launch conpty.exe
+	rm -f tmux-wsl-workaround tmux-wsl-launch

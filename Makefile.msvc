@@ -1,0 +1,11 @@
+CC = cl
+CFLAGS = /nologo /W4 /O2 /DUNICODE /D_UNICODE
+LDFLAGS =
+
+all: conpty.exe
+
+conpty.exe: conpty.c
+	$(CC) $(CFLAGS) conpty.c /Fe:conpty.exe /link $(LDFLAGS)
+
+clean:
+	-del /Q conpty.exe conpty.obj 2>NUL

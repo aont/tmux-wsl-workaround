@@ -19,7 +19,8 @@ This is not a replacement implementation of the tmux command-line interface. It 
 * The Windows C drive mounted at `/mnt/c`
 * tmux installed in the same WSL distribution
 * The wrapper running as the distribution's default WSL user
-* A C99 compiler, a MinGW-w64 cross-compiler, and `make` when building the compiled implementation
+* A C99 compiler and `make` for the Linux components
+* Either a MinGW-w64 cross-compiler and `make`, or MSVC and `nmake`, for the Windows ConPTY host
 * Windows 10 version 1809 or later (required by ConPTY)
 
 The wrapper and the real tmux must be in the **same WSL distribution**. The FIFO paths used to return the session ID and exit status are local to that distribution.
@@ -30,7 +31,7 @@ The repository contains two implementations.
 
 ### Compiled C implementation
 
-`tmux.c` is built and installed by the Makefile. This is the recommended implementation. The build also installs a small `tmux-wsl-launch` helper that redirects the inner command's output and reports its exit status without launching a shell, plus the Windows `conpty.exe` host built from the included `conpty.c` source. The ConPTY source comes from [vast-cow's helper](https://gist.github.com/vast-cow/3ea08fdfc2caba6ac2df1939dd316268), with fallback declarations added for older MinGW-w64 headers.
+`tmux.c` is built and installed by `Makefile.linux`. This is the recommended implementation. The build also installs a small `tmux-wsl-launch` helper that redirects the inner command's output and reports its exit status without launching a shell. The Windows `conpty.exe` host is built separately from the included `conpty.c` source using either `Makefile.mingw` or `Makefile.msvc`. The ConPTY source comes from [vast-cow's helper](https://gist.github.com/vast-cow/3ea08fdfc2caba6ac2df1939dd316268), with fallback declarations added for older MinGW-w64 headers.
 
 The real tmux, ConPTY host, and inner launch-helper paths are fixed at build time.
 
@@ -38,18 +39,33 @@ The real tmux, ConPTY host, and inner launch-helper paths are fixed at build tim
 
 The `tmux` file is an implementation written for BusyBox `ash`. It uses the compiled `tmux-wsl-launch` helper for the inner WSL process.
 
-The Makefile does not install the ash implementation automatically, but it does install the launch and ConPTY helpers that the script requires.
+`Makefile.linux` does not install the ash implementation automatically, but it does install the launch helper that the script requires. Install the separately built ConPTY helper as described below.
 
 ## Installation
 
 First install the real tmux and the tools required to build the wrapper.
 
-Clone the repository and run:
+Clone the repository and build the Linux wrapper and launch helper:
 
 ```sh
-make
-sudo make install
+make -f Makefile.linux
+sudo make -f Makefile.linux install
 ```
+
+Build the Windows host from WSL with MinGW-w64:
+
+```sh
+make -f Makefile.mingw
+sudo install -m 0755 conpty.exe /usr/local/libexec/conpty.exe
+```
+
+Alternatively, build it from an MSVC Developer Command Prompt on Windows:
+
+```bat
+nmake /F Makefile.msvc
+```
+
+Then copy `conpty.exe` to `/usr/local/libexec/conpty.exe` in the WSL distribution. `Makefile.linux` deliberately neither builds nor installs this Windows executable.
 
 By default, this produces the following arrangement:
 
@@ -77,7 +93,6 @@ The following Make variables are available:
 | `TMUX_BIN` | `/usr/bin/tmux`                   | Absolute path to the real tmux     |
 | `CONPTY_EXE` | `$(LIBEXECDIR)/conpty.exe`      | Windows ConPTY host path           |
 | `LAUNCH_BIN` | `$(LIBEXECDIR)/tmux-wsl-launch` | Inner WSL launch helper path      |
-| `WINDOWS_CC` | `x86_64-w64-mingw32-gcc`       | Compiler used to build `conpty.exe` |
 | `PREFIX`   | `/usr/local`                      | Installation prefix                |
 | `BINDIR`   | `$(PREFIX)/bin`                   | Wrapper installation directory     |
 | `LIBEXECDIR` | `$(PREFIX)/libexec`             | Launch helper installation directory |
@@ -85,10 +100,10 @@ The following Make variables are available:
 For example:
 
 ```sh
-make clean
-make TMUX_BIN=/usr/bin/tmux \
+make -f Makefile.linux clean
+make -f Makefile.linux TMUX_BIN=/usr/bin/tmux \
      CONPTY_EXE=/usr/local/libexec/conpty.exe
-sudo make install PREFIX=/usr/local
+sudo make -f Makefile.linux install PREFIX=/usr/local
 ```
 
 Do not install the wrapper over the real tmux binary. `TMUX_BIN` must never resolve to the wrapper itself, or invocation will recurse.
@@ -138,8 +153,10 @@ apk add --no-cache git tmux build-base mingw-w64-gcc
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
-make
-make install
+make -f Makefile.mingw
+make -f Makefile.linux
+make -f Makefile.linux install
+install -m 0755 conpty.exe /usr/local/libexec/conpty.exe
 ```
 
 Run the installation command as root, or through an appropriately configured privilege-elevation tool.
@@ -152,8 +169,10 @@ apk add --no-cache git tmux build-base mingw-w64-gcc
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
-make
-make install
+make -f Makefile.mingw
+make -f Makefile.linux
+make -f Makefile.linux install
+install -m 0755 conpty.exe /usr/local/libexec/conpty.exe
 install -m 0755 ./tmux /usr/local/bin/tmux
 ```
 

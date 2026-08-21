@@ -1,0 +1,14 @@
+CC ?= x86_64-w64-mingw32-gcc
+CPPFLAGS ?=
+CFLAGS ?= -std=c99 -Wall -Wextra -O2
+LDFLAGS ?=
+
+.PHONY: all clean
+
+all: conpty.exe
+
+conpty.exe: conpty.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -municode $(LDFLAGS) -o $@ conpty.c
+
+clean:
+	rm -f conpty.exe
