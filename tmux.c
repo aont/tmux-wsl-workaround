@@ -18,8 +18,8 @@
 #ifndef TMUX_BIN
 #define TMUX_BIN "/usr/bin/tmux"
 #endif
-#ifndef CMD_EXE
-#define CMD_EXE "/mnt/c/Windows/System32/cmd.exe"
+#ifndef CONPTY_EXE
+#define CONPTY_EXE "/usr/local/libexec/conpty.exe"
 #endif
 #ifndef LAUNCH_BIN
 #define LAUNCH_BIN "/usr/local/libexec/tmux-wsl-launch"
@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
     save_terminal_title();
 
     const char *tmux_bin = TMUX_BIN;
-    const char *cmd_exe = CMD_EXE;
+    const char *conpty_exe = CONPTY_EXE;
     const char *launch_bin = LAUNCH_BIN;
     const char *distro = getenv("WSL_DISTRO_NAME");
     if (!distro) distro = "";
@@ -259,8 +259,8 @@ int main(int argc, char **argv) {
     if (mkfifo(result_fifo, 0600) < 0 || mkfifo(status_fifo, 0600) < 0) die("mkfifo");
 
     struct vec cmd = {0};
-    vec_push(&cmd, cmd_exe); vec_push(&cmd, "/c"); vec_push(&cmd, "start"); vec_push(&cmd, "");
-    vec_push(&cmd, "/min"); vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
+    vec_push(&cmd, conpty_exe); vec_push(&cmd, "--");
+    vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
     vec_push(&cmd, "--cd"); vec_push(&cmd, start_dir); vec_push(&cmd, "--exec");
     vec_push(&cmd, launch_bin); vec_push(&cmd, "--output"); vec_push(&cmd, result_fifo);
     vec_push(&cmd, "--status"); vec_push(&cmd, status_fifo); vec_push(&cmd, "--"); vec_push(&cmd, tmux_bin);
@@ -270,7 +270,7 @@ int main(int argc, char **argv) {
     if (chdir("/mnt/c") < 0) die("chdir /mnt/c");
     pid_t pid = fork();
     if (pid < 0) die("fork");
-    if (pid == 0) { execv(cmd_exe, cmd.v); _exit(127); }
+    if (pid == 0) { execv(conpty_exe, cmd.v); _exit(127); }
 
     int rfd = open(result_fifo, O_RDONLY | O_NONBLOCK);
     int sfd = open(status_fifo, O_RDONLY | O_NONBLOCK);

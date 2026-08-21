@@ -3,7 +3,7 @@
 # not bash, so do not use arrays or bash-only syntax here.
 
 TMUX_BIN=${TMUX_BIN:-/usr/bin/tmux}
-CMD_EXE=${CMD_EXE:-/mnt/c/Windows/System32/cmd.exe}
+CONPTY_EXE=${CONPTY_EXE:-/usr/local/libexec/conpty.exe}
 LAUNCH_BIN=${TMUX_WSL_LAUNCH_BIN:-/usr/local/libexec/tmux-wsl-launch}
 WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-}
 
@@ -134,20 +134,21 @@ mkfifo "$result_fifo" "$status_fifo" || {
     exit 1
 }
 watchdog_pid=
+launch_pid=
 cleanup() {
     if [ -n "$watchdog_pid" ]; then
         kill "$watchdog_pid" 2>/dev/null
+    fi
+    if [ -n "$launch_pid" ]; then
+        kill "$launch_pid" 2>/dev/null
     fi
     rm -rf "$tmpdir"
 }
 trap cleanup EXIT HUP INT TERM
 
 cmd_words=
-append_word cmd_words "$CMD_EXE"
-append_word cmd_words /c
-append_word cmd_words start
-append_word cmd_words ""
-append_word cmd_words /min
+append_word cmd_words "$CONPTY_EXE"
+append_word cmd_words --
 append_word cmd_words wsl.exe
 append_word cmd_words -d
 append_word cmd_words "$WSL_DISTRO_NAME"
@@ -171,11 +172,8 @@ append_word cmd_words '#{session_id}'
 cmd_words=${cmd_words}${tail_words}
 
 cd /mnt/c || exit 1
-eval "$cmd_words"
-launch_status=$?
-if [ $launch_status -ne 0 ]; then
-    exit $launch_status
-fi
+eval "$cmd_words" &
+launch_pid=$!
 
 (
     sleep "$LAUNCH_TIMEOUT"
@@ -199,6 +197,8 @@ if [ -n "$watchdog_pid" ]; then
     kill "$watchdog_pid" 2>/dev/null
     watchdog_pid=
 fi
+wait "$launch_pid" 2>/dev/null
+launch_pid=
 
 case $result_status in
     ''|*[!0-9]*) result_status=1 ;;
