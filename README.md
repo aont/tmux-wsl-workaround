@@ -45,7 +45,7 @@ Alternatively, build it from an MSVC developer command prompt with NMake:
 nmake /F Makefile.msvc
 ```
 
-Copy `console_redirect.exe` into the WSL filesystem at `/usr/local/bin/console_redirect.exe`. Then build and install the Linux wrapper from WSL:
+Copy `console_redirect.exe` into the repository's working directory in the WSL filesystem. Then build and install the Linux wrapper from WSL:
 
 ```sh
 make -f Makefile.linux
@@ -56,7 +56,7 @@ By default, this produces the following arrangement:
 
 ```text
 /usr/local/bin/tmux   wrapper
-/usr/local/bin/console_redirect.exe   Windows launch helper
+/usr/local/libexec/console_redirect.exe   Windows launch helper
 /usr/bin/tmux         real tmux
 ```
 
@@ -75,16 +75,17 @@ The following Make variables are available:
 | Variable   | Default                           | Purpose                            |
 | ---------- | --------------------------------- | ---------------------------------- |
 | `TMUX_BIN` | `/usr/bin/tmux`                   | Absolute path to the real tmux     |
-| `CONSOLE_REDIRECT_EXE` | `/usr/local/bin/console_redirect.exe` | Installed Windows helper path |
+| `CONSOLE_REDIRECT_EXE` | `/usr/local/libexec/console_redirect.exe` | Installed Windows helper path |
 | `PREFIX`   | `/usr/local`                      | Installation prefix                |
 | `BINDIR`   | `$(PREFIX)/bin`                   | Wrapper installation directory     |
+| `LIBEXECDIR` | `$(PREFIX)/libexec`             | Helper installation directory      |
 
 For example:
 
 ```sh
 make -f Makefile.linux clean
 make -f Makefile.linux TMUX_BIN=/usr/bin/tmux \
-     CONSOLE_REDIRECT_EXE=/usr/local/bin/console_redirect.exe
+     CONSOLE_REDIRECT_EXE=/usr/local/libexec/console_redirect.exe
 sudo make -f Makefile.linux install PREFIX=/usr/local
 ```
 
@@ -108,7 +109,7 @@ After installation, find the exact registered distribution name with:
 wsl.exe --list --verbose
 ```
 
-After building the Windows helper as described above and copying it to `/usr/local/bin/console_redirect.exe`, the compiled implementation can be installed inside Alpine with:
+After building the Windows helper as described above and copying it into the cloned repository's working directory, the compiled implementation can be installed inside Alpine with:
 
 ```sh
 apk add --no-cache git tmux build-base
@@ -251,7 +252,7 @@ A container, chroot, or manually constructed Linux environment may not provide t
 Check that Windows interoperability and the expected paths work:
 
 ```sh
-test -x /usr/local/bin/console_redirect.exe
+test -x /usr/local/libexec/console_redirect.exe
 test -x /usr/bin/tmux
 ```
 
