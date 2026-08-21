@@ -21,6 +21,9 @@
 #ifndef CMD_EXE
 #define CMD_EXE "/mnt/c/Windows/System32/cmd.exe"
 #endif
+#ifndef LAUNCH_BIN
+#define LAUNCH_BIN "/usr/local/libexec/tmux-wsl-launch"
+#endif
 
 struct vec {
     char **v;
@@ -183,6 +186,7 @@ int main(int argc, char **argv) {
 
     const char *tmux_bin = TMUX_BIN;
     const char *cmd_exe = CMD_EXE;
+    const char *launch_bin = LAUNCH_BIN;
     const char *distro = getenv("WSL_DISTRO_NAME");
     if (!distro) distro = "";
 
@@ -258,9 +262,8 @@ int main(int argc, char **argv) {
     vec_push(&cmd, cmd_exe); vec_push(&cmd, "/c"); vec_push(&cmd, "start"); vec_push(&cmd, "");
     vec_push(&cmd, "/min"); vec_push(&cmd, "wsl.exe"); vec_push(&cmd, "-d"); vec_push(&cmd, distro);
     vec_push(&cmd, "--cd"); vec_push(&cmd, start_dir); vec_push(&cmd, "--exec");
-    vec_push(&cmd, "/bin/sh"); vec_push(&cmd, "-c");
-    vec_push(&cmd, "fifo=$1; status_fifo=$2; shift 2; \"$@\" >\"$fifo\"; status=$?; printf '%s\\n' \"$status\" >\"$status_fifo\"; exit \"$status\"");
-    vec_push(&cmd, "tmux-wsl-workaround"); vec_push(&cmd, result_fifo); vec_push(&cmd, status_fifo); vec_push(&cmd, tmux_bin);
+    vec_push(&cmd, launch_bin); vec_push(&cmd, "--output"); vec_push(&cmd, result_fifo);
+    vec_push(&cmd, "--status"); vec_push(&cmd, status_fifo); vec_push(&cmd, "--"); vec_push(&cmd, tmux_bin);
     vec_extend(&cmd, &global); vec_push(&cmd, "new-session"); vec_extend(&cmd, &new_opts);
     vec_push(&cmd, "-d"); vec_push(&cmd, "-P"); vec_push(&cmd, "-F"); vec_push(&cmd, "#{session_id}"); vec_extend(&cmd, &tail);
 

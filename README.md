@@ -18,7 +18,6 @@ This is not a replacement implementation of the tmux command-line interface. It 
 * A normal WSL distribution session with `WSL_DISTRO_NAME` set
 * The Windows C drive mounted at `/mnt/c`
 * `/mnt/c/Windows/System32/cmd.exe`
-* `/bin/sh`
 * tmux installed in the same WSL distribution
 * The wrapper running as the distribution's default WSL user
 * A C99 compiler and `make` when using the compiled implementation
@@ -31,15 +30,15 @@ The repository contains two implementations.
 
 ### Compiled C implementation
 
-`tmux.c` is built and installed by the Makefile. This is the recommended implementation.
+`tmux.c` is built and installed by the Makefile. This is the recommended implementation. The build also installs a small `tmux-wsl-launch` helper that redirects the inner command's output and reports its exit status without launching a shell.
 
 The real tmux and `cmd.exe` paths are fixed at build time.
 
 ### BusyBox ash implementation
 
-The `tmux` file is an implementation written for BusyBox `ash`. It can be used without compiling the C program.
+The `tmux` file is an implementation written for BusyBox `ash`. It uses the compiled `tmux-wsl-launch` helper for the inner WSL process.
 
-The Makefile does not install the ash implementation automatically.
+The Makefile does not install the ash implementation automatically, but it does install the helper that the script requires.
 
 ## Installation
 
@@ -57,6 +56,7 @@ By default, this produces the following arrangement:
 ```text
 /usr/local/bin/tmux   wrapper
 /usr/bin/tmux         real tmux
+/usr/local/libexec/tmux-wsl-launch   inner launch helper
 ```
 
 Ensure `/usr/local/bin` precedes `/usr/bin` in `PATH`:
@@ -75,8 +75,10 @@ The following Make variables are available:
 | ---------- | --------------------------------- | ---------------------------------- |
 | `TMUX_BIN` | `/usr/bin/tmux`                   | Absolute path to the real tmux     |
 | `CMD_EXE`  | `/mnt/c/Windows/System32/cmd.exe` | Absolute path to Windows `cmd.exe` |
+| `LAUNCH_BIN` | `$(LIBEXECDIR)/tmux-wsl-launch` | Inner WSL launch helper path      |
 | `PREFIX`   | `/usr/local`                      | Installation prefix                |
 | `BINDIR`   | `$(PREFIX)/bin`                   | Wrapper installation directory     |
+| `LIBEXECDIR` | `$(PREFIX)/libexec`             | Launch helper installation directory |
 
 For example:
 
@@ -102,6 +104,7 @@ It recognizes these optional environment variables:
 ```sh
 TMUX_BIN=/usr/bin/tmux
 CMD_EXE=/mnt/c/Windows/System32/cmd.exe
+TMUX_WSL_LAUNCH_BIN=/usr/local/libexec/tmux-wsl-launch
 TMUX_WSL_LAUNCH_TIMEOUT=15
 ```
 
@@ -139,14 +142,16 @@ make install
 
 Run the installation command as root, or through an appropriately configured privilege-elevation tool.
 
-For the ash implementation, a compiler is not required:
+For the ash implementation, build and install the launch helper before replacing the compiled wrapper with the script:
 
 ```sh
-apk add --no-cache git tmux
+apk add --no-cache git tmux build-base
 
 git clone https://github.com/aont/tmux-wsl-workaround.git
 cd tmux-wsl-workaround
 
+make
+make install
 install -m 0755 ./tmux /usr/local/bin/tmux
 ```
 
@@ -231,7 +236,8 @@ For specially handled session creation, the wrapper:
    cmd.exe /c start "" /min
        wsl.exe -d <current-distribution>
        --cd <current-directory>
-       --exec /bin/sh ...
+       --exec /usr/local/libexec/tmux-wsl-launch
+       --output <result-fifo> --status <status-fifo> -- ...
    ```
 
 4. Runs the real tmux with internal `-d`, `-P`, and `-F '#{session_id}'` options.
