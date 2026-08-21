@@ -4,8 +4,9 @@ CFLAGS ?= -std=c99 -Wall -Wextra -O2
 LDFLAGS ?=
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
+LIBEXECDIR ?= $(PREFIX)/libexec
 TMUX_BIN ?= /usr/bin/tmux
-CONSOLE_REDIRECT_EXE ?= $(BINDIR)/console_redirect.exe
+CONSOLE_REDIRECT_EXE ?= $(LIBEXECDIR)/console_redirect.exe
 
 .PHONY: all clean install
 
