@@ -5,7 +5,6 @@
 TMUX_BIN=${TMUX_BIN:-/usr/bin/tmux}
 CMD_EXE=${CMD_EXE:-/mnt/c/Windows/System32/cmd.exe}
 WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-}
-SEP=$(printf '\037')
 
 quote_arg() {
     printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\\\\''/g")"
@@ -99,10 +98,13 @@ while getopts :AdEPXc:e:F:f:n:s:t:x:y: opt; do
             [ "$opt" = P ] && user_print=1
             append_word new_words "$opt_word"
             ;;
-        c|e|F|f|n|s|t|x|y)
+        F)
+            user_format_specified=1
+            user_format=$OPTARG
+            ;;
+        c|e|f|n|s|t|x|y)
             append_word new_words "$opt_word"
             append_word new_words "$OPTARG"
-            [ "$opt" = F ] && user_format_specified=1 && user_format=$OPTARG
             [ "$opt" = f ] && client_flags=$OPTARG
             ;;
         ?|:)
@@ -116,17 +118,6 @@ while [ $# -gt 0 ]; do
     append_word tail_words "$1"
     shift
 done
-
-if [ $user_print -eq 1 ]; then
-    if [ $user_format_specified -eq 1 ]; then
-        visible_format=$user_format
-    else
-        visible_format='#{session_name}:'
-    fi
-else
-    visible_format=
-fi
-internal_format="#{session_id}${SEP}${visible_format}"
 
 if [ -z "$WSL_DISTRO_NAME" ]; then
     printf '%s\n' 'tmux wrapper: WSL_DISTRO_NAME is required for FIFO transport' >&2
@@ -175,7 +166,7 @@ cmd_words=${cmd_words}${new_words}
 append_word cmd_words -d
 append_word cmd_words -P
 append_word cmd_words -F
-append_word cmd_words "$internal_format"
+append_word cmd_words '#{session_id}'
 cmd_words=${cmd_words}${tail_words}
 
 cd /mnt/c || exit 1
@@ -193,7 +184,7 @@ fi
 watchdog_pid=$!
 
 exec 3<"$result_fifo"
-IFS= read -r -d "$SEP" session_id <&3
+IFS= read -r session_id <&3
 read_session_status=$?
 
 result_status=
@@ -233,12 +224,25 @@ case $session_id in
         ;;
 esac
 
-if [ $user_print -eq 1 ]; then
-    cat <&3
-else
-    cat <&3 >/dev/null
-fi
+cat <&3 >/dev/null
 exec 3<&-
+
+if [ $user_print -eq 1 ]; then
+    display_words=
+    append_word display_words "$TMUX_BIN"
+    display_words=${display_words}${global_words}
+    append_word display_words display-message
+    append_word display_words -p
+    append_word display_words -t
+    append_word display_words "$session_id"
+    append_word display_words -F
+    if [ $user_format_specified -eq 1 ]; then
+        append_word display_words "$user_format"
+    else
+        append_word display_words '#{session_name}:'
+    fi
+    eval "$display_words" || exit $?
+fi
 
 [ $user_detached -eq 1 ] && exit 0
 

@@ -234,11 +234,13 @@ For specially handled session creation, the wrapper:
        --exec /bin/sh ...
    ```
 
-4. Runs the real tmux with internal `-d`, `-P`, and `-F` options.
+4. Runs the real tmux with internal `-d`, `-P`, and `-F '#{session_id}'` options.
 
 5. Receives the immutable tmux session ID and tmux exit status through the FIFOs.
 
-6. Preserves user-requested `-P` and `-F` output.
+6. When the user requested `-P`, obtains the printable result separately with
+   `display-message -p -t <session-id> -F <user-format>`. This prevents the
+   user's format from interfering with retrieval of the session ID.
 
 7. Returns immediately if the original command included `-d`.
 
