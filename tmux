@@ -4,6 +4,7 @@
 
 TMUX_BIN=${TMUX_BIN:-/usr/bin/tmux}
 CMD_EXE=${CMD_EXE:-/mnt/c/Windows/System32/cmd.exe}
+LAUNCH_BIN=${TMUX_WSL_LAUNCH_BIN:-/usr/local/libexec/tmux-wsl-launch}
 WSL_DISTRO_NAME=${WSL_DISTRO_NAME:-}
 
 quote_arg() {
@@ -153,12 +154,12 @@ append_word cmd_words "$WSL_DISTRO_NAME"
 append_word cmd_words --cd
 append_word cmd_words "$start_dir"
 append_word cmd_words "--exec"
-append_word cmd_words /bin/sh
-append_word cmd_words -c
-append_word cmd_words 'result_fifo=$1; status_fifo=$2; shift 2; "$@" >"$result_fifo"; status=$?; printf "%s\n" "$status" >"$status_fifo"; exit "$status"'
-append_word cmd_words sh
+append_word cmd_words "$LAUNCH_BIN"
+append_word cmd_words --output
 append_word cmd_words "$result_fifo"
+append_word cmd_words --status
 append_word cmd_words "$status_fifo"
+append_word cmd_words --
 append_word cmd_words "$TMUX_BIN"
 cmd_words=${cmd_words}${global_words}
 append_word cmd_words new-session
