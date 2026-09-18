@@ -1,0 +1,38 @@
+CC ?= cc
+CFLAGS ?= -O2 -g
+CFLAGS += -std=c11 -Wall -Wextra -Wpedantic
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+LIBEXECDIR ?= $(PREFIX)/libexec
+TMUX_PATH ?= $(shell command -v tmux 2>/dev/null)
+LAUNCHER_PATH := $(LIBEXECDIR)/newwin_launcher.exe
+
+.PHONY: all clean test install
+all: wrapper
+
+wrapper: tmux-wsl-wrapper.c
+	@test -n '$(TMUX_PATH)' || { \
+		echo 'error: tmux not found in PATH; set TMUX_PATH explicitly' >&2; \
+		exit 1; \
+	}
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DTMUX_PATH='"$(TMUX_PATH)"' \
+		-DNEWWIN_LAUNCHER_PATH='"$(LAUNCHER_PATH)"' $(LDFLAGS) -o $@ $<
+
+test:
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DTMUX_PATH='"$(CURDIR)/tests/tmux-stub"' \
+		-DNEWWIN_LAUNCHER_PATH='"$(CURDIR)/tests/launcher-stub"' \
+		$(LDFLAGS) -o wrapper-test tmux-wsl-wrapper.c
+	WRAPPER=$(CURDIR)/wrapper-test ./tests/test.sh
+	rm -f wrapper-test
+
+install: wrapper
+	@test -f newwin_launcher.exe || { \
+		echo 'error: newwin_launcher.exe must be built before installation' >&2; \
+		exit 1; \
+	}
+	install -d '$(DESTDIR)$(BINDIR)' '$(DESTDIR)$(LIBEXECDIR)'
+	install -m 755 wrapper '$(DESTDIR)$(BINDIR)/tmux-wsl-wrapper'
+	install -m 755 newwin_launcher.exe '$(DESTDIR)$(LIBEXECDIR)/newwin_launcher.exe'
+
+clean:
+	rm -f wrapper wrapper-test

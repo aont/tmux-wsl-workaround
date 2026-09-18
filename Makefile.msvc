@@ -1,0 +1,10 @@
+CC=cl
+CFLAGS=/nologo /O2 /W4 /D_CRT_SECURE_NO_WARNINGS
+
+all: newwin_launcher.exe
+
+newwin_launcher.exe: newwin_launcher.c
+	$(CC) $(CFLAGS) newwin_launcher.c /Fe:newwin_launcher.exe
+
+clean:
+	-del /Q newwin_launcher.exe newwin_launcher.obj 2>NUL

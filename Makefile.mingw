@@ -1,0 +1,13 @@
+# Run this Makefile in an MSYS2 UCRT64 shell (or override CC).
+CC = gcc
+CFLAGS ?= -O2
+CFLAGS += -std=c11 -Wall -Wextra -Wpedantic
+
+.PHONY: all clean
+all: newwin_launcher.exe
+
+newwin_launcher.exe: newwin_launcher.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+clean:
+	rm -f newwin_launcher.exe

@@ -10,11 +10,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifndef CMD_EXE_PATH
-#define CMD_EXE_PATH "/mnt/c/Windows/System32/cmd.exe"
-#endif
-#ifndef CMD_WORKDIR
-#define CMD_WORKDIR "/mnt/c"
+#ifndef NEWWIN_LAUNCHER_PATH
+#define NEWWIN_LAUNCHER_PATH "/usr/local/libexec/newwin_launcher.exe"
 #endif
 #ifndef TMUX_PATH
 #define TMUX_PATH "/usr/bin/tmux"
@@ -45,8 +42,7 @@ static void push(struct strings *s, char *value)
     s->v[s->n] = NULL;
 }
 
-static int run_at(char *const argv[], const char *stage, const char *directory,
-                  int quiet_stderr)
+static int run_and_wait(char *const argv[], const char *stage, int quiet_stderr)
 {
     pid_t pid = fork();
     int status;
@@ -61,10 +57,6 @@ static int run_at(char *const argv[], const char *stage, const char *directory,
                 close(nullfd);
             }
         }
-        if (directory && chdir(directory) < 0) {
-            perror("bootstrap chdir /mnt/c");
-            _exit(127);
-        }
         execvp(argv[0], argv);
         perror(stage);
         _exit(127);
@@ -78,11 +70,6 @@ static int run_at(char *const argv[], const char *stage, const char *directory,
     fprintf(stderr, "%s: child terminated by signal %d\n", stage,
             WTERMSIG(status));
     return 128 + WTERMSIG(status);
-}
-
-static int run_and_wait(char *const argv[], const char *stage, int quiet_stderr)
-{
-    return run_at(argv, stage, NULL, quiet_stderr);
 }
 
 /* show-options is a server command, but unlike has-session it also succeeds
@@ -113,8 +100,7 @@ static int bootstrap(const struct strings *carry, const char *tmpdir)
     const char *distro = getenv("WSL_DISTRO_NAME");
     const char *pwd = getenv("PWD");
     char cwd[4096];
-    struct strings wsl = {0};
-    struct strings cmd = {0};
+    struct strings command = {0};
     char *assignment = NULL;
     size_t i;
     int status;
@@ -130,38 +116,29 @@ static int bootstrap(const struct strings *carry, const char *tmpdir)
             return 1;
         }
     }
-    push(&wsl, "wsl.exe"); push(&wsl, "-d"); push(&wsl, (char *)distro);
-    push(&wsl, "--cd"); push(&wsl, (char *)pwd); push(&wsl, "--exec");
+    push(&command, NEWWIN_LAUNCHER_PATH);
+    push(&command, "wsl.exe"); push(&command, "-d"); push(&command, (char *)distro);
+    push(&command, "--cd"); push(&command, (char *)pwd); push(&command, "--exec");
     if (tmpdir) {
         size_t len = strlen(tmpdir) + sizeof("TMUX_TMPDIR=");
         assignment = malloc(len);
         if (!assignment)
             die("malloc TMUX_TMPDIR");
         snprintf(assignment, len, "TMUX_TMPDIR=%s", tmpdir);
-        push(&wsl, "env");
-        push(&wsl, assignment);
+        push(&command, "env");
+        push(&command, assignment);
     }
-    push(&wsl, TMUX_PATH);
+    push(&command, TMUX_PATH);
     for (i = 0; i < carry->n; i++)
-        push(&wsl, carry->v[i]);
-    push(&wsl, "start-server"); push(&wsl, ";");
-    push(&wsl, "set-option"); push(&wsl, "-g");
-    push(&wsl, "exit-empty"); push(&wsl, "off");
+        push(&command, carry->v[i]);
+    push(&command, "start-server"); push(&command, ";");
+    push(&command, "set-option"); push(&command, "-g");
+    push(&command, "exit-empty"); push(&command, "off");
 
-    /* Keep each word as an argv element.  WSL interop can then serialize the
-     * vector once; in particular, do not put a second, CRT-escaped command
-     * line inside the /c argument (cmd.exe does not parse CRT quoting). */
-    push(&cmd, CMD_EXE_PATH);
-    push(&cmd, "/d"); push(&cmd, "/v:off"); push(&cmd, "/c");
-    push(&cmd, "start"); push(&cmd, "");
-    push(&cmd, "/wait"); push(&cmd, "/min");
-    for (i = 0; i < wsl.n; i++)
-        push(&cmd, wsl.v[i]);
-
-    status = run_at(cmd.v, "bootstrap cmd.exe", CMD_WORKDIR, 0);
+    status = run_and_wait(command.v, "bootstrap launcher", 0);
     if (status)
-        fprintf(stderr, "bootstrap: cmd.exe exited with status %d\n", status);
-    free(assignment); free(wsl.v); free(cmd.v);
+        fprintf(stderr, "bootstrap: launcher exited with status %d\n", status);
+    free(assignment); free(command.v);
     return status;
 }
 
