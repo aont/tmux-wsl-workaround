@@ -11,8 +11,14 @@ replaces itself with the requested tmux command.
 make
 ```
 
+At build time, `make` resolves `tmux` from `PATH` and embeds that absolute path
+in the wrapper.  The server probe, Windows-side bootstrap, and final execution
+all use the embedded path, so the resulting binary can safely be installed as
+`tmux` without recursively invoking itself.  To select a particular binary,
+set the path explicitly (for example, `make TMUX_PATH=/opt/tmux/bin/tmux`).
+
 Put the resulting `wrapper` somewhere in `PATH` (under a name other than
-`tmux`) and invoke it with ordinary tmux arguments.
+`tmux`, or as `tmux` itself) and invoke it with ordinary tmux arguments.
 
 The server probe uses `show-options -g exit-empty`, rather than `has-session`,
 because it succeeds for a live server with zero sessions. `-L` and `-S` are

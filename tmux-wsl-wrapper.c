@@ -16,6 +16,9 @@
 #ifndef CMD_WORKDIR
 #define CMD_WORKDIR "/mnt/c"
 #endif
+#ifndef TMUX_PATH
+#define TMUX_PATH "/usr/bin/tmux"
+#endif
 
 struct strings {
     char **v;
@@ -90,7 +93,7 @@ static int server_exists(const struct strings *socket_options)
     size_t i;
     int status;
 
-    push(&a, "tmux");
+    push(&a, TMUX_PATH);
     for (i = 0; i < socket_options->n; i++)
         push(&a, socket_options->v[i]);
     push(&a, "show-options");
@@ -138,7 +141,7 @@ static int bootstrap(const struct strings *carry, const char *tmpdir)
         push(&wsl, "env");
         push(&wsl, assignment);
     }
-    push(&wsl, "tmux");
+    push(&wsl, TMUX_PATH);
     for (i = 0; i < carry->n; i++)
         push(&wsl, carry->v[i]);
     push(&wsl, "start-server"); push(&wsl, ";");
@@ -191,7 +194,7 @@ int main(int argc, char **argv)
 
     if (!direct && !server_exists(&socket_options) && bootstrap(&carry, tmpdir))
         return EXIT_FAILURE;
-    execvp("tmux", argv);
+    execv(TMUX_PATH, argv);
     perror("final exec tmux");
     return EXIT_FAILURE;
 }
