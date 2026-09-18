@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,6 +84,122 @@ static int run_at(char *const argv[], const char *stage, const char *directory,
 static int run_and_wait(char *const argv[], const char *stage, int quiet_stderr)
 {
     return run_at(argv, stage, NULL, quiet_stderr);
+}
+
+/* Start a disposable server to ask tmux for the compiled-in server default.
+ * The final command is intentionally part of the same invocation: when the
+ * default is on, it also makes the verification server remove its socket. */
+static int default_exit_empty(void)
+{
+    char *const check[] = {TMUX_PATH, "-L", "check", "start", ";", "show",
+                           "-s", "-v", "exit-empty", ";", "set-option", "-g",
+                           "exit-empty", "on", NULL};
+    int output[2], status;
+    pid_t pid;
+    char value[16];
+    ssize_t n, used = 0;
+
+    if (pipe(output) < 0)
+        die("checking exit-empty default");
+    pid = fork();
+    if (pid < 0)
+        die("checking exit-empty default");
+    if (pid == 0) {
+        close(output[0]);
+        if (dup2(output[1], STDOUT_FILENO) < 0)
+            _exit(127);
+        close(output[1]);
+        execv(TMUX_PATH, check);
+        perror("checking exit-empty default");
+        _exit(127);
+    }
+    close(output[1]);
+    while (used < (ssize_t)sizeof(value) - 1 &&
+           (n = read(output[0], value + used, sizeof(value) - 1 - used)) > 0)
+        used += n;
+    close(output[0]);
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR)
+            die("checking exit-empty default");
+    }
+    value[used] = '\0';
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "checking exit-empty default: tmux command failed\n");
+        exit(EXIT_FAILURE);
+    }
+    if (strcmp(value, "on\n") == 0 || strcmp(value, "on") == 0)
+        return 1;
+    if (strcmp(value, "off\n") == 0 || strcmp(value, "off") == 0)
+        return 0;
+    fprintf(stderr, "checking exit-empty default: unexpected value: %s", value);
+    if (!strchr(value, '\n'))
+        fputc('\n', stderr);
+    exit(EXIT_FAILURE);
+}
+
+static void ignore_signal(int signal_number)
+{
+    (void)signal_number;
+}
+
+static void restore_child_signals(void)
+{
+    signal(SIGHUP, SIG_DFL);
+    signal(SIGINT, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+}
+
+static int run_final_with_exit_empty(char **argv,
+                                     const struct strings *socket_options)
+{
+    struct strings enable = {0};
+    pid_t client, setter;
+    int client_status, setter_status;
+    size_t i;
+
+    push(&enable, TMUX_PATH);
+    for (i = 0; i < socket_options->n; i++)
+        push(&enable, socket_options->v[i]);
+    push(&enable, "set-option"); push(&enable, "-g");
+    push(&enable, "exit-empty"); push(&enable, "on");
+
+    signal(SIGHUP, ignore_signal);
+    signal(SIGINT, ignore_signal);
+    signal(SIGQUIT, ignore_signal);
+    signal(SIGTERM, ignore_signal);
+
+    client = fork();
+    if (client < 0)
+        die("fork final tmux");
+    if (client == 0) {
+        restore_child_signals();
+        execv(TMUX_PATH, argv);
+        perror("final exec tmux");
+        _exit(127);
+    }
+    setter = fork();
+    if (setter < 0)
+        die("fork exit-empty setter");
+    if (setter == 0) {
+        restore_child_signals();
+        execv(TMUX_PATH, enable.v);
+        perror("setting exit-empty");
+        _exit(127);
+    }
+
+    while (waitpid(client, &client_status, 0) < 0)
+        if (errno != EINTR)
+            die("waiting for final tmux");
+    while (waitpid(setter, &setter_status, 0) < 0)
+        if (errno != EINTR)
+            die("waiting for exit-empty setter");
+    free(enable.v);
+    if (!WIFEXITED(setter_status) || WEXITSTATUS(setter_status) != 0)
+        fprintf(stderr, "setting exit-empty: tmux command failed\n");
+    if (WIFEXITED(client_status))
+        return WEXITSTATUS(client_status);
+    return 128 + WTERMSIG(client_status);
 }
 
 /* show-options is a server command, but unlike has-session it also succeeds
@@ -168,7 +285,7 @@ static int bootstrap(const struct strings *carry, const char *tmpdir)
 int main(int argc, char **argv)
 {
     struct strings carry = {0}, socket_options = {0};
-    int c, direct = 0;
+    int c, direct = 0, server_running, exit_empty_default = 0;
     const char *tmpdir = getenv("TMUX_TMPDIR");
 
     opterr = 0;
@@ -192,8 +309,14 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!direct && !server_exists(&socket_options) && bootstrap(&carry, tmpdir))
-        return EXIT_FAILURE;
+    server_running = direct || server_exists(&socket_options);
+    if (!server_running) {
+        exit_empty_default = default_exit_empty();
+        if (bootstrap(&carry, tmpdir))
+            return EXIT_FAILURE;
+    }
+    if (!server_running && exit_empty_default)
+        return run_final_with_exit_empty(argv, &socket_options);
     execv(TMUX_PATH, argv);
     perror("final exec tmux");
     return EXIT_FAILURE;

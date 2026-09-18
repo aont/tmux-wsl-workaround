@@ -12,6 +12,10 @@ cat >tests/tmux-stub <<'EOF'
 #!/bin/sh
 printf 'TMUX:<%s>\n' "$@" >>"$LOG"
 case " $* " in
+*' -L check start ; show -s -v exit-empty ; set-option -g exit-empty on '*)
+    echo "${DEFAULT_EXIT_EMPTY:-off}"
+    exit 0
+    ;;
 *' show-options -g exit-empty '*)
     status=${PROBE_STATUS:-1}
     [ "$status" -eq 0 ] || echo 'no server running on test socket' >&2
@@ -44,7 +48,7 @@ assert_cmd()
 assert_probe()
 {
     printf 'TMUX:<%s>\n' "$@" >"$tmp/expected"
-    sed '/^CMD-BEGIN$/,$d' "$LOG" >"$tmp/actual"
+    head -n "$#" "$LOG" >"$tmp/actual"
     diff -u "$tmp/expected" "$tmp/actual"
 }
 
@@ -87,6 +91,17 @@ set -- /d /v:off /c start '' /wait /min wsl.exe -d 'Test Distro' --cd /work --ex
 assert_cmd "$@"
 assert_probe -L 'first label' -S '/tmp/first sock' -L second -S /tmp/final \
     show-options -g exit-empty
+
+# The default is checked with a disposable verification server.  If it is on,
+# the requested command and the command restoring exit-empty run as siblings.
+: >"$LOG"; env -u TMUX_TMPDIR PWD=/work PROBE_STATUS=1 DEFAULT_EXIT_EMPTY=on \
+    "$WRAPPER" -L final new-session
+for arg in -L check start ';' show -s -v exit-empty ';' set-option -g exit-empty on; do
+    grep -Fqx -- "TMUX:<$arg>" "$LOG"
+done
+grep -Fqx -- 'TMUX:<new-session>' "$LOG"
+grep -Fqx -- 'TMUX:<exit-empty>' "$LOG"
+grep -Fqx -- 'TMUX:<on>' "$LOG"
 
 # Defined, empty, and undefined TMUX_TMPDIR are distinct.
 : >"$LOG"; TMUX_TMPDIR='/tmp/a b' PWD=/work PROBE_STATUS=1 "$WRAPPER" new-session

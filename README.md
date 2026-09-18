@@ -1,9 +1,17 @@
 # tmux WSL wrapper
 
 This wrapper prevents the first tmux server in a WSL distribution from becoming
-a child of the current Windows terminal.  If the selected server does not exist,
-it starts it through `cmd.exe` and `wsl.exe`, disables `exit-empty`, and then
-replaces itself with the requested tmux command.
+a child of the current Windows terminal. If the selected server does not exist,
+it first checks tmux's default `exit-empty` value with a disposable server named
+`check`, then starts the requested server through `cmd.exe` and `wsl.exe` with
+`exit-empty` disabled.
+
+When the detected default is `on`, the wrapper forks the requested tmux command
+and, in a separate child, restores `exit-empty` to `on` on the new server. The
+waiting parent ignores terminal signals while each child retains tmux's normal
+signal handling. This keeps the server alive across the bootstrap gap without
+changing its eventual option from the tmux default. If the detected default is
+`off`, the wrapper retains the original direct-exec behavior.
 
 ## Build
 
@@ -65,7 +73,8 @@ env -u TMUX_TMPDIR ./wrapper new-session
 The test suite replaces `tmux` and `cmd.exe` with recording stubs, and checks
 the exact argv boundary, direct `-h`/`-V` paths, option boundary at
 `new-session -d`, carry-over ordering, socket selection, defined/empty/undefined
-`TMUX_TMPDIR`, spaces, quotes, trailing backslashes, and cmd metacharacters.
+`TMUX_TMPDIR`, spaces, quotes, trailing backslashes, cmd metacharacters, the
+disposable default check, and restoration of an `on` default.
 
 The stub cannot emulate WSL's PE interop or `cmd.exe` parsing. Before a release,
 run this additional integration check from an actual WSL shell (with no tmux
