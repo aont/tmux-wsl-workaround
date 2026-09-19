@@ -18,7 +18,11 @@ case " $* " in
     ;;
 *' show-options -g exit-empty '*)
     status=${PROBE_STATUS:-1}
-    [ "$status" -eq 0 ] || echo 'no server running on test socket' >&2
+    if [ "$status" -eq 0 ]; then
+        echo 'exit-empty on'
+    else
+        echo 'no server running on test socket' >&2
+    fi
     exit "$status"
     ;;
 esac
@@ -62,7 +66,8 @@ grep -qx -- 'TMUX:<-h>' "$LOG"
 
 # An existing server is selected with the same socket options and needs no
 # Windows bootstrap.  Options after the command remain command arguments.
-: >"$LOG"; PROBE_STATUS=0 "$WRAPPER" -L foo new-session -d
+: >"$LOG"; PROBE_STATUS=0 "$WRAPPER" -L foo new-session -d >"$tmp/stdout"
+[ ! -s "$tmp/stdout" ]
 grep -qx -- 'TMUX:<-L>' "$LOG"
 grep -qx -- 'TMUX:<foo>' "$LOG"
 grep -qx -- 'TMUX:<-d>' "$LOG"

@@ -47,7 +47,7 @@ static void push(struct strings *s, char *value)
 }
 
 static int run_at(char *const argv[], const char *stage, const char *directory,
-                  int quiet_stderr)
+                  int quiet_stdout, int quiet_stderr)
 {
     pid_t pid = fork();
     int status;
@@ -55,10 +55,13 @@ static int run_at(char *const argv[], const char *stage, const char *directory,
     if (pid < 0)
         die(stage);
     if (pid == 0) {
-        if (quiet_stderr) {
+        if (quiet_stdout || quiet_stderr) {
             int nullfd = open("/dev/null", O_WRONLY);
             if (nullfd >= 0) {
-                (void)dup2(nullfd, STDERR_FILENO);
+                if (quiet_stdout)
+                    (void)dup2(nullfd, STDOUT_FILENO);
+                if (quiet_stderr)
+                    (void)dup2(nullfd, STDERR_FILENO);
                 close(nullfd);
             }
         }
@@ -81,9 +84,10 @@ static int run_at(char *const argv[], const char *stage, const char *directory,
     return 128 + WTERMSIG(status);
 }
 
-static int run_and_wait(char *const argv[], const char *stage, int quiet_stderr)
+static int run_and_wait(char *const argv[], const char *stage,
+                        int quiet_stdout, int quiet_stderr)
 {
-    return run_at(argv, stage, NULL, quiet_stderr);
+    return run_at(argv, stage, NULL, quiet_stdout, quiet_stderr);
 }
 
 /* Start a disposable server to ask tmux for the compiled-in server default.
@@ -216,7 +220,7 @@ static int server_exists(const struct strings *socket_options)
     push(&a, "show-options");
     push(&a, "-g");
     push(&a, "exit-empty");
-    status = run_and_wait(a.v, "checking tmux server", 1);
+    status = run_and_wait(a.v, "checking tmux server", 1, 1);
     free(a.v);
     if (status == 127) {
         fprintf(stderr, "checking tmux server: could not execute tmux\n");
@@ -275,7 +279,7 @@ static int bootstrap(const struct strings *carry, const char *tmpdir)
     for (i = 0; i < wsl.n; i++)
         push(&cmd, wsl.v[i]);
 
-    status = run_at(cmd.v, "bootstrap cmd.exe", CMD_WORKDIR, 0);
+    status = run_at(cmd.v, "bootstrap cmd.exe", CMD_WORKDIR, 0, 0);
     if (status)
         fprintf(stderr, "bootstrap: cmd.exe exited with status %d\n", status);
     free(assignment); free(wsl.v); free(cmd.v);
