@@ -18,7 +18,8 @@ case " $* " in
     ;;
 *' show-options -g exit-empty '*)
     status=${PROBE_STATUS:-1}
-    [ "$status" -eq 0 ] || echo 'no server running on test socket' >&2
+    [ -z "${PROBE_STDOUT:-}" ] || echo "$PROBE_STDOUT"
+    [ -z "${PROBE_STDERR:-}" ] || echo "$PROBE_STDERR" >&2
     exit "$status"
     ;;
 esac
@@ -62,11 +63,24 @@ grep -qx -- 'TMUX:<-h>' "$LOG"
 
 # An existing server is selected with the same socket options and needs no
 # Windows bootstrap.  Options after the command remain command arguments.
-: >"$LOG"; PROBE_STATUS=0 "$WRAPPER" -L foo new-session -d
+: >"$LOG"; PROBE_STATUS=0 PROBE_STDOUT='exit-empty on' \
+    PROBE_STDERR='probe diagnostic' "$WRAPPER" -L foo new-session -d \
+    >"$tmp/stdout" 2>"$tmp/stderr"
+[ ! -s "$tmp/stdout" ]
+grep -qx 'probe diagnostic' "$tmp/stderr"
 grep -qx -- 'TMUX:<-L>' "$LOG"
 grep -qx -- 'TMUX:<foo>' "$LOG"
 grep -qx -- 'TMUX:<-d>' "$LOG"
 ! grep -q '^CMD-' "$LOG"
+
+# A failed probe also suppresses stdout, preserves stderr, and triggers the
+# bootstrap path based on its exit status.
+: >"$LOG"; env -u TMUX_TMPDIR PWD=/work PROBE_STATUS=1 \
+    PROBE_STDOUT='exit-empty on' PROBE_STDERR='no server diagnostic' \
+    "$WRAPPER" new-session >"$tmp/stdout" 2>"$tmp/stderr"
+[ ! -s "$tmp/stdout" ]
+grep -qx 'no server diagnostic' "$tmp/stderr"
+grep -q '^CMD-BEGIN' "$LOG"
 
 # Ordinary bootstrap: cmd.exe receives words, not one constructed /c string.
 : >"$LOG"; env -u TMUX_TMPDIR PWD=/work PROBE_STATUS=1 "$WRAPPER" new-session 2>"$tmp/stderr"
