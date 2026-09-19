@@ -4,9 +4,9 @@ CFLAGS += -std=c11 -Wall -Wextra -Wpedantic
 TMUX_PATH ?= $(shell command -v tmux 2>/dev/null)
 
 .PHONY: all clean test
-all: wrapper
+all: tmux
 
-wrapper: tmux-wsl-wrapper.c
+tmux: tmux-wsl-wrapper.c
 	@test -n '$(TMUX_PATH)' || { \
 		echo 'error: tmux not found in PATH; set TMUX_PATH explicitly' >&2; \
 		exit 1; \
@@ -22,4 +22,4 @@ test:
 	rm -f wrapper-test
 
 clean:
-	rm -f wrapper wrapper-test
+	rm -f tmux wrapper-test
